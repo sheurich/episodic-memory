@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { verifyIndex, repairIndex } from './verify.js';
-import { indexSession, indexUnprocessed, indexConversations } from './indexer.js';
+import { indexSession, indexUnprocessed, indexConversations, indexAllSources } from './indexer.js';
 import { getDbPath, getArchiveDir } from './paths.js';
 import fs from 'fs';
 import path from 'path';
@@ -18,6 +18,19 @@ function getConcurrency() {
 // Parse --no-summaries flag
 function getNoSummaries() {
     return process.argv.includes('--no-summaries');
+}
+// Parse --source flag (can be repeated: --source claude --source pi)
+function getSources() {
+    const sources = [];
+    const validSources = new Set(['claude', 'gemini', 'pi', 'opencode']);
+    for (let i = 0; i < process.argv.length; i++) {
+        if (process.argv[i] === '--source' && process.argv[i + 1]) {
+            const s = process.argv[i + 1];
+            if (validSources.has(s))
+                sources.push(s);
+        }
+    }
+    return sources.length > 0 ? sources : undefined;
 }
 const concurrency = getConcurrency();
 const noSummaries = getNoSummaries();
@@ -94,7 +107,18 @@ async function main() {
                 break;
             case 'index-all':
             default:
-                await indexConversations(undefined, undefined, concurrency, noSummaries);
+                if (command === 'index-all-sources' || getSources()) {
+                    // Multi-source indexing (Claude + Gemini + Pi)
+                    await indexAllSources({
+                        sources: getSources(),
+                        concurrency,
+                        noSummaries,
+                    });
+                }
+                else {
+                    // Legacy Claude-only indexing
+                    await indexConversations(undefined, undefined, concurrency, noSummaries);
+                }
                 break;
         }
     }

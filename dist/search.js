@@ -43,6 +43,7 @@ export async function searchConversations(query, options = {}) {
         e.archive_path,
         e.line_start,
         e.line_end,
+        e.source,
         vec.distance
       FROM vec_exchanges AS vec
       JOIN exchanges AS e ON vec.id = e.id
@@ -65,6 +66,7 @@ export async function searchConversations(query, options = {}) {
         e.archive_path,
         e.line_start,
         e.line_end,
+        e.source,
         0 as distance
       FROM exchanges AS e
       WHERE (e.user_message LIKE ? OR e.assistant_message LIKE ?)
@@ -96,7 +98,8 @@ export async function searchConversations(query, options = {}) {
             assistantMessage: row.assistant_message,
             archivePath: row.archive_path,
             lineStart: row.line_start,
-            lineEnd: row.line_end
+            lineEnd: row.line_end,
+            source: row.source || 'claude',
         };
         // Try to load summary if available
         const summaryPath = row.archive_path.replace('.jsonl', '-summary.txt');
@@ -154,8 +157,9 @@ export async function formatResults(results) {
         const result = results[index];
         const date = new Date(result.exchange.timestamp).toISOString().split('T')[0];
         const simPct = result.similarity !== undefined ? Math.round(result.similarity * 100) : null;
-        // Header with match percentage
-        output += `${index + 1}. [${result.exchange.project}, ${date}]`;
+        // Header with source and match percentage
+        const sourceLabel = result.exchange.source ? result.exchange.source.toUpperCase() : 'CLAUDE';
+        output += `${index + 1}. [${sourceLabel}] [${result.exchange.project}, ${date}]`;
         if (simPct !== null) {
             output += ` - ${simPct}% match`;
         }
@@ -241,8 +245,9 @@ export async function formatMultiConceptResults(results, concepts) {
         const result = results[index];
         const date = new Date(result.exchange.timestamp).toISOString().split('T')[0];
         const avgPct = Math.round(result.averageSimilarity * 100);
-        // Header with average match percentage
-        output += `${index + 1}. [${result.exchange.project}, ${date}] - ${avgPct}% avg match\n`;
+        // Header with source and average match percentage
+        const sourceLabel = result.exchange.source ? result.exchange.source.toUpperCase() : 'CLAUDE';
+        output += `${index + 1}. [${sourceLabel}] [${result.exchange.project}, ${date}] - ${avgPct}% avg match\n`;
         // Show individual concept scores
         const scores = result.conceptSimilarities
             .map((sim, i) => `${concepts[i]}: ${Math.round(sim * 100)}%`)
