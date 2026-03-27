@@ -1,3 +1,6 @@
+/** Agent source that produced the conversation */
+export type AgentSource = 'claude' | 'gemini' | 'pi';
+
 export interface ToolCall {
   id: string;
   exchangeId: string;
@@ -18,6 +21,9 @@ export interface ConversationExchange {
   lineStart: number;
   lineEnd: number;
 
+  /** Which agent produced this exchange */
+  source: AgentSource;
+
   // Conversation structure
   parentUuid?: string;
   isSidechain?: boolean;
@@ -26,7 +32,14 @@ export interface ConversationExchange {
   sessionId?: string;
   cwd?: string;
   gitBranch?: string;
+  /** Agent version string (Claude, Gemini CLI, Pi) */
+  agentVersion?: string;
+  /** @deprecated Use agentVersion instead */
   claudeVersion?: string;
+
+  // Model metadata (available from Gemini and Pi sessions)
+  model?: string;
+  provider?: string;
 
   // Thinking metadata
   thinkingLevel?: string;
@@ -35,6 +48,36 @@ export interface ConversationExchange {
 
   // Tool calls (populated separately)
   toolCalls?: ToolCall[];
+}
+
+/**
+ * Interface that all source parsers must implement.
+ * Each parser discovers conversation files and parses them into exchanges.
+ */
+export interface ConversationSource {
+  /** Unique name for this source (matches AgentSource) */
+  readonly name: AgentSource;
+
+  /** Human-readable label for display */
+  readonly label: string;
+
+  /**
+   * Discover all conversation files from this source.
+   * Returns an array of { project, filePath } tuples.
+   */
+  discoverConversations(): Promise<Array<{
+    project: string;
+    filePath: string;
+  }>>;
+
+  /**
+   * Parse a conversation file into exchanges.
+   */
+  parseConversation(
+    filePath: string,
+    project: string,
+    archivePath: string
+  ): Promise<ConversationExchange[]>;
 }
 
 export interface SearchResult {

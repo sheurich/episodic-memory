@@ -98,3 +98,39 @@ export function getExcludedProjects(): string[] {
   // Default: no exclusions
   return [];
 }
+
+// ── Gemini CLI paths ──
+
+/**
+ * Get Gemini CLI base directory.
+ * Override with GEMINI_HOME for testing.
+ */
+export function getGeminiDir(): string {
+  return process.env.GEMINI_HOME || path.join(os.homedir(), '.gemini');
+}
+
+/**
+ * Get the directory containing Gemini CLI chat sessions.
+ * Sessions live under ~/.gemini/tmp/<projectHash>/chats/
+ */
+export function getGeminiChatsBaseDir(): string {
+  return path.join(getGeminiDir(), 'tmp');
+}
+
+// ── Pi paths ──
+
+/**
+ * Get Pi base directory.
+ * Override with PI_HOME for testing.
+ */
+export function getPiDir(): string {
+  return process.env.PI_HOME || path.join(os.homedir(), '.pi');
+}
+
+/**
+ * Get the directory containing Pi session JSONL files.
+ * Sessions live under ~/.pi/agent/sessions/<cwd-hash>/
+ */
+export function getPiSessionsDir(): string {
+  return path.join(getPiDir(), 'agent', 'sessions');
+}

@@ -20,6 +20,10 @@ export function migrateSchema(db: Database.Database): void {
     { name: 'thinking_level', sql: 'ALTER TABLE exchanges ADD COLUMN thinking_level TEXT' },
     { name: 'thinking_disabled', sql: 'ALTER TABLE exchanges ADD COLUMN thinking_disabled BOOLEAN' },
     { name: 'thinking_triggers', sql: 'ALTER TABLE exchanges ADD COLUMN thinking_triggers TEXT' },
+    { name: 'source', sql: "ALTER TABLE exchanges ADD COLUMN source TEXT DEFAULT 'claude'" },
+    { name: 'agent_version', sql: 'ALTER TABLE exchanges ADD COLUMN agent_version TEXT' },
+    { name: 'model', sql: 'ALTER TABLE exchanges ADD COLUMN model TEXT' },
+    { name: 'provider', sql: 'ALTER TABLE exchanges ADD COLUMN provider TEXT' },
   ];
 
   let migrated = false;
@@ -125,6 +129,9 @@ export function initDatabase(): Database.Database {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_tool_exchange ON tool_calls(exchange_id)
   `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_source ON exchanges(source)
+  `);
 
   return db;
 }
@@ -141,8 +148,9 @@ export function insertExchange(
     INSERT OR REPLACE INTO exchanges
     (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end, last_indexed,
      parent_uuid, is_sidechain, session_id, cwd, git_branch, claude_version,
-     thinking_level, thinking_disabled, thinking_triggers)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     thinking_level, thinking_disabled, thinking_triggers,
+     source, agent_version, model, provider)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   stmt.run(
@@ -155,15 +163,19 @@ export function insertExchange(
     exchange.lineStart,
     exchange.lineEnd,
     now,
-    exchange.parentUuid || null,
+    exchange.parentUuid ?? null,
     exchange.isSidechain ? 1 : 0,
-    exchange.sessionId || null,
-    exchange.cwd || null,
-    exchange.gitBranch || null,
-    exchange.claudeVersion || null,
-    exchange.thinkingLevel || null,
+    exchange.sessionId ?? null,
+    exchange.cwd ?? null,
+    exchange.gitBranch ?? null,
+    exchange.claudeVersion ?? exchange.agentVersion ?? null,
+    exchange.thinkingLevel ?? null,
     exchange.thinkingDisabled ? 1 : 0,
-    exchange.thinkingTriggers || null
+    exchange.thinkingTriggers ?? null,
+    exchange.source ?? 'claude',
+    exchange.agentVersion ?? exchange.claudeVersion ?? null,
+    exchange.model ?? null,
+    exchange.provider ?? null
   );
 
   // Insert into vector table (delete first since virtual tables don't support REPLACE)
