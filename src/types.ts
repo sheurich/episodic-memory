@@ -1,5 +1,5 @@
 /** Agent source that produced the conversation */
-export type AgentSource = 'claude' | 'gemini' | 'pi';
+export type AgentSource = 'claude' | 'gemini' | 'pi' | 'opencode';
 
 export interface ToolCall {
   id: string;

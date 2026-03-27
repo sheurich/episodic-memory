@@ -27,7 +27,7 @@ function getNoSummaries(): boolean {
 // Parse --source flag (can be repeated: --source claude --source pi)
 function getSources(): AgentSource[] | undefined {
   const sources: AgentSource[] = [];
-  const validSources = new Set<AgentSource>(['claude', 'gemini', 'pi']);
+  const validSources = new Set<AgentSource>(['claude', 'gemini', 'pi', 'opencode']);
   for (let i = 0; i < process.argv.length; i++) {
     if (process.argv[i] === '--source' && process.argv[i + 1]) {
       const s = process.argv[i + 1] as AgentSource;
