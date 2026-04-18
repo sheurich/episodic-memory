@@ -308,7 +308,7 @@ Episodic-memory provides an MCP (Model Context Protocol) server that exposes too
 
 Search indexed conversations using semantic similarity or exact text matching.
 
-**Single-concept search**: Pass a string query
+**Single-concept search**: Use the `search` tool with a string query
 ```json
 {
   "query": "React Router authentication",
@@ -317,17 +317,24 @@ Search indexed conversations using semantic similarity or exact text matching.
 }
 ```
 
-**Multi-concept AND search**: Pass an array of concepts
+**Multi-concept AND search**: Use the `search_multi` tool with a `concepts` array
 ```json
 {
-  "query": ["React Router", "authentication", "JWT"],
+  "concepts": ["React Router", "authentication", "JWT"],
   "limit": 10
 }
 ```
 
-**Parameters:**
-- `query` (string | string[]): Single string for regular search, or array of 2-5 strings for multi-concept AND search
+**Parameters for `search`:**
+- `query` (string): Single string for regular search
 - `mode` ('vector' | 'text' | 'both'): Search mode for single-concept searches (default: 'both')
+- `limit` (number): Max results, 1-50 (default: 10)
+- `after` (string, optional): Only show conversations after YYYY-MM-DD
+- `before` (string, optional): Only show conversations before YYYY-MM-DD
+- `response_format` ('markdown' | 'json'): Output format (default: 'markdown')
+
+**Parameters for `search_multi`:**
+- `concepts` (string[]): Array of 2-5 strings for multi-concept AND search
 - `limit` (number): Max results, 1-50 (default: 10)
 - `after` (string, optional): Only show conversations after YYYY-MM-DD
 - `before` (string, optional): Only show conversations before YYYY-MM-DD

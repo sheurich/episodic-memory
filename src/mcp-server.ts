@@ -28,46 +28,111 @@ import fs from 'fs';
 const SearchModeEnum = z.enum(['vector', 'text', 'both']);
 const ResponseFormatEnum = z.enum(['markdown', 'json']);
 
+const MultiConceptQuerySchema = z
+  .array(z.string().min(2))
+  .min(2, 'Must provide at least 2 concepts for multi-concept search')
+  .max(5, 'Cannot search more than 5 concepts at once');
+
+const OptionalDateFilterSchema = (description: string) =>
+  z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
+    .nullish()
+    .transform((value) => value ?? undefined)
+    .describe(description);
+
+const CommonSearchInputFields = {
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .default(10)
+    .describe('Maximum number of results to return (default: 10)'),
+  after: OptionalDateFilterSchema(
+    'Only return conversations after this date (YYYY-MM-DD format)'
+  ),
+  before: OptionalDateFilterSchema(
+    'Only return conversations before this date (YYYY-MM-DD format)'
+  ),
+  response_format: ResponseFormatEnum.default('markdown').describe(
+    'Output format: "markdown" for human-readable or "json" for machine-readable (default: "markdown")'
+  ),
+};
+
 const SearchInputSchema = z
   .object({
     query: z
-      .union([
-        z.string().min(2, 'Query must be at least 2 characters'),
-        z
-          .array(z.string().min(2))
-          .min(2, 'Must provide at least 2 concepts for multi-concept search')
-          .max(5, 'Cannot search more than 5 concepts at once'),
-      ])
-      .describe(
-        'Search query - string for single concept, array of strings for multi-concept AND search'
-      ),
+      .string()
+      .min(2, 'Query must be at least 2 characters')
+      .describe('Single-concept search query'),
     mode: SearchModeEnum.default('both').describe(
-      'Search mode: "vector" for semantic similarity, "text" for exact matching, "both" for combined (default: "both"). Only used for single-concept searches.'
+      'Search mode: "vector" for semantic similarity, "text" for exact matching, "both" for combined (default: "both").'
     ),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(50)
-      .default(10)
-      .describe('Maximum number of results to return (default: 10)'),
-    after: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
-      .optional()
-      .describe('Only return conversations after this date (YYYY-MM-DD format)'),
-    before: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
-      .optional()
-      .describe('Only return conversations before this date (YYYY-MM-DD format)'),
-    response_format: ResponseFormatEnum.default('markdown').describe(
-      'Output format: "markdown" for human-readable or "json" for machine-readable (default: "markdown")'
-    ),
+    ...CommonSearchInputFields,
+  })
+  .strict();
+
+const SearchMultiInputSchema = z
+  .object({
+    concepts: MultiConceptQuerySchema.describe('Multi-concept AND search terms'),
+    ...CommonSearchInputFields,
   })
   .strict();
 
 type SearchInput = z.infer<typeof SearchInputSchema>;
+type SearchMultiInput = z.infer<typeof SearchMultiInputSchema>;
+
+async function formatSingleSearchResponse(params: SearchInput): Promise<string> {
+  const results = await searchConversations(params.query, {
+    mode: params.mode,
+    limit: params.limit,
+    after: params.after,
+    before: params.before,
+  });
+
+  if (params.response_format === 'json') {
+    return JSON.stringify(
+      {
+        results: results.map((r) => ({
+          exchange: r.exchange,
+          similarity: r.similarity,
+          snippet: r.snippet,
+        })),
+        count: results.length,
+        mode: params.mode,
+      },
+      null,
+      2
+    );
+  }
+
+  return formatResults(results);
+}
+
+async function formatMultiSearchResponse(params: SearchMultiInput): Promise<string> {
+  const results = await searchMultipleConcepts(params.concepts, {
+    limit: params.limit,
+    after: params.after,
+    before: params.before,
+  });
+
+  if (params.response_format === 'json') {
+    return JSON.stringify(
+      {
+        results,
+        count: results.length,
+        concepts: params.concepts,
+      },
+      null,
+      2
+    );
+  }
+
+  return formatMultiConceptResults(results, params.concepts);
+}
+
+
 
 const ShowConversationInputSchema = z
   .object({
@@ -122,15 +187,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: 'search',
-        description: `Gives you memory across sessions. You don't automatically remember past conversations - this tool restores context by searching them. Use BEFORE every task to recover decisions, solutions, and avoid reinventing work. Single string for semantic search or array of 2-5 concepts for precise AND matching. Returns ranked results with project, date, snippets, and file paths.`,
+        description: `Gives you memory across sessions. You don't automatically remember past conversations - this tool restores context by searching them. Use BEFORE every task to recover decisions, solutions, and avoid reinventing work. Use this tool for single-concept searches. Returns ranked results with project, date, snippets, and file paths.`,
         inputSchema: {
           type: 'object',
           properties: {
             query: {
-              oneOf: [
-                { type: 'string', minLength: 2 },
-                { type: 'array', items: { type: 'string', minLength: 2 }, minItems: 2, maxItems: 5 },
-              ],
+              type: 'string',
+              minLength: 2,
+              description: 'Single-concept search query',
             },
             mode: { type: 'string', enum: ['vector', 'text', 'both'], default: 'both' },
             limit: { type: 'number', minimum: 1, maximum: 50, default: 10 },
@@ -141,8 +205,39 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['query'],
           additionalProperties: false,
         },
+
         annotations: {
           title: 'Search Episodic Memory',
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      {
+        name: 'search_multi',
+        description: `Search conversations that match ALL provided concepts. Use this only for multi-concept AND searches. Returns ranked results with project, date, snippets, and file paths.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            concepts: {
+              type: 'array',
+              items: { type: 'string', minLength: 2 },
+              minItems: 2,
+              maxItems: 5,
+              description: 'Multi-concept AND search terms',
+            },
+            limit: { type: 'number', minimum: 1, maximum: 50, default: 10 },
+            after: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            before: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            response_format: { type: 'string', enum: ['markdown', 'json'], default: 'markdown' },
+          },
+          required: ['concepts'],
+          additionalProperties: false,
+        },
+
+        annotations: {
+          title: 'Search Episodic Memory (Multi-Concept)',
           readOnlyHint: true,
           destructiveHint: false,
           idempotentHint: true,
@@ -182,67 +277,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     if (name === 'search') {
       const params = SearchInputSchema.parse(args);
-      let resultText: string;
-
-      // Check if query is array (multi-concept) or string (single-concept)
-      if (Array.isArray(params.query)) {
-        // Multi-concept search
-        const options = {
-          limit: params.limit,
-          after: params.after,
-          before: params.before,
-        };
-
-        const results = await searchMultipleConcepts(params.query, options);
-
-        if (params.response_format === 'json') {
-          resultText = JSON.stringify(
-            {
-              results: results,
-              count: results.length,
-              concepts: params.query,
-            },
-            null,
-            2
-          );
-        } else {
-          resultText = await formatMultiConceptResults(results, params.query);
-        }
-      } else {
-        // Single-concept search
-        const options: SearchOptions = {
-          mode: params.mode,
-          limit: params.limit,
-          after: params.after,
-          before: params.before,
-        };
-
-        const results = await searchConversations(params.query, options);
-
-        if (params.response_format === 'json') {
-          resultText = JSON.stringify(
-            {
-              results: results.map((r) => ({
-                exchange: r.exchange,
-                similarity: r.similarity,
-                snippet: r.snippet,
-              })),
-              count: results.length,
-              mode: params.mode,
-            },
-            null,
-            2
-          );
-        } else {
-          resultText = await formatResults(results);
-        }
-      }
 
       return {
         content: [
           {
             type: 'text',
-            text: resultText,
+            text: await formatSingleSearchResponse(params),
+          },
+        ],
+      };
+    }
+
+    if (name === 'search_multi') {
+      const params = SearchMultiInputSchema.parse(args);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: await formatMultiSearchResponse(params),
           },
         ],
       };

@@ -8,14 +8,28 @@ The episodic-memory MCP server exposes two tools: `search` and `read`.
 
 ## search
 
-Search your episodic memory of past conversations using semantic or text search.
+Search your episodic memory of past conversations using semantic or text search for a single query term or phrase.
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `query` | `string` or `string[]` | Yes | Search query. String for single-concept search, array of 2-5 strings for multi-concept AND search |
-| `mode` | `"vector"` \| `"text"` \| `"both"` | No | Search mode (default: `"both"`). Only used for single-concept searches |
+| `query` | `string` | Yes | Single-concept search query |
+| `mode` | `"vector"` \| `"text"` \| `"both"` | No | Search mode (default: `"both"`) |
+| `limit` | `number` | No | Maximum results to return, 1-50 (default: 10) |
+| `after` | `string` | No | Only return conversations after this date (YYYY-MM-DD) |
+| `before` | `string` | No | Only return conversations before this date (YYYY-MM-DD) |
+| `response_format` | `"markdown"` \| `"json"` | No | Output format (default: `"markdown"`) |
+
+## search_multi
+
+Search for conversations that match ALL provided concepts.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `concepts` | `string[]` | Yes | Multi-concept AND search terms (2-5 strings) |
 | `limit` | `number` | No | Maximum results to return, 1-50 (default: 10) |
 | `after` | `string` | No | Only return conversations after this date (YYYY-MM-DD) |
 | `before` | `string` | No | Only return conversations before this date (YYYY-MM-DD) |
@@ -39,16 +53,14 @@ Search your episodic memory of past conversations using semantic or text search.
 
 ### Multi-Concept Search (AND)
 
-Search for conversations containing ALL concepts:
+Search for conversations containing ALL concepts with `search_multi`:
 
 ```json
 {
-  "query": ["authentication", "React Router", "error handling"],
+  "concepts": ["authentication", "React Router", "error handling"],
   "limit": 10
 }
 ```
-
-Note: `mode` is ignored for multi-concept searches (always uses vector similarity).
 
 ### Date Filtering
 
