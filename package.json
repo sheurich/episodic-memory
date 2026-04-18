@@ -1,7 +1,7 @@
 {
   "name": "episodic-memory",
   "version": "1.0.15",
-  "description": "Semantic search for Claude Code conversations",
+  "description": "Semantic search for agent conversations (Claude Code, Pi, Gemini CLI, OpenCode)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
@@ -19,11 +19,17 @@
   },
   "keywords": [
     "claude-code",
+    "pi-package",
     "conversations",
     "search",
     "semantic-search",
     "embeddings"
   ],
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"],
+    "agents": ["./agents"]
+  },
   "author": {
     "name": "Jesse Vincent",
     "email": "jesse@fsck.com"

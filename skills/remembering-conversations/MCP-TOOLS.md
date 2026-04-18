@@ -1,12 +1,14 @@
 # Episodic Memory MCP Tools Reference
 
-The episodic-memory plugin exposes two MCP tools for searching and displaying past conversations.
+The episodic-memory MCP server exposes two tools: `search` and `read`.
+
+> **Claude Code note:** Claude Code auto-prefixes MCP tool names. These tools
+> appear as `mcp__plugin_episodic-memory_episodic-memory__search` and
+> `mcp__plugin_episodic-memory_episodic-memory__read` in Claude Code.
 
 ## search
 
-Search your episodic memory of past Claude Code conversations using semantic or text search.
-
-**Tool name:** `mcp__plugin_episodic-memory_episodic-memory__search`
+Search your episodic memory of past conversations using semantic or text search.
 
 ### Parameters
 
@@ -21,17 +23,17 @@ Search your episodic memory of past Claude Code conversations using semantic or 
 
 ### Search Modes
 
-- **`vector`** - Semantic similarity search using embeddings
-- **`text`** - Exact text matching (case-insensitive)
-- **`both`** - Combined semantic + text search (default, recommended)
+- **`vector`** — Semantic similarity search using embeddings
+- **`text`** — Exact text matching (case-insensitive)
+- **`both`** — Combined semantic + text search (default, recommended)
 
 ### Single-Concept Search
 
-```typescript
+```json
 {
-  query: "React Router authentication errors",
-  mode: "both",
-  limit: 10
+  "query": "React Router authentication errors",
+  "mode": "both",
+  "limit": 10
 }
 ```
 
@@ -39,10 +41,10 @@ Search your episodic memory of past Claude Code conversations using semantic or 
 
 Search for conversations containing ALL concepts:
 
-```typescript
+```json
 {
-  query: ["authentication", "React Router", "error handling"],
-  limit: 10
+  "query": ["authentication", "React Router", "error handling"],
+  "limit": 10
 }
 ```
 
@@ -50,11 +52,11 @@ Note: `mode` is ignored for multi-concept searches (always uses vector similarit
 
 ### Date Filtering
 
-```typescript
+```json
 {
-  query: "refactoring patterns",
-  after: "2025-09-01",
-  before: "2025-10-01"
+  "query": "refactoring patterns",
+  "after": "2025-09-01",
+  "before": "2025-10-01"
 }
 ```
 
@@ -84,31 +86,29 @@ Machine-readable format:
 
 Display a full conversation from episodic memory as markdown.
 
-**Tool name:** `mcp__plugin_episodic-memory_episodic-memory__read`
-
 ### Parameters
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | `string` | Yes | Absolute path to the JSONL conversation file |
+| `path` | `string` | Yes | Absolute path to the conversation file |
 | `startLine` | `number` | No | Starting line number (1-indexed, inclusive) |
 | `endLine` | `number` | No | Ending line number (1-indexed, inclusive) |
 
 ### Usage
 
 **Read entire conversation:**
-```typescript
+```json
 {
-  path: "/Users/name/.config/superpowers/conversation-archive/project/uuid.jsonl"
+  "path": "/path/to/conversation-archive/project/uuid.jsonl"
 }
 ```
 
 **Read specific range:**
-```typescript
+```json
 {
-  path: "/Users/name/.config/superpowers/conversation-archive/project/uuid.jsonl",
-  startLine: 100,
-  endLine: 200
+  "path": "/path/to/conversation-archive/project/uuid.jsonl",
+  "startLine": 100,
+  "endLine": 200
 }
 ```
 
@@ -129,8 +129,8 @@ Both tools return errors as text content with `isError: true`:
 
 ## Performance Notes
 
-- **Search** is fast (< 100ms typically)
-- **Show** can be slow for large conversations
+- **search** is fast (< 100ms typically)
+- **read** can be slow for large conversations
   - Use `startLine`/`endLine` to paginate
   - Conversations can be 1000+ lines
 - Vector search uses sqlite-vec with cached embeddings

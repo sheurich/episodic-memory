@@ -7,24 +7,19 @@ description: Use when user asks 'how should I...' or 'what's the best approach..
 
 **Core principle:** Search before reinventing. Searching costs nothing; reinventing or repeating mistakes costs everything.
 
-## Mandatory: Use the Search Agent
+## Dispatch a Search Subagent
 
-**YOU MUST dispatch the search-conversations agent for any historical search.**
+**YOU MUST dispatch a search subagent for any historical search.**
 
-Announce: "Dispatching search agent to find [topic]."
+Announce: "Searching episodic memory for [topic]."
 
-Then use the Task tool with `subagent_type: "search-conversations"`:
+Delegate to the `search-conversations` agent with a task like:
 
-```
-Task tool:
-  description: "Search past conversations for [topic]"
-  prompt: "Search for [specific query or topic]. Focus on [what you're looking for - e.g., decisions, patterns, gotchas, code examples]."
-  subagent_type: "search-conversations"
-```
+> Search past conversations for [topic]. Focus on [what you're looking for — decisions, patterns, gotchas, code examples].
 
 The agent will:
-1. Search with the `search` tool
-2. Read top 2-5 results with the `show` tool
+1. Search with the `search` tool on the `episodic-memory` MCP server
+2. Read the top 2-5 results with the `read` tool
 3. Synthesize findings (200-1000 words)
 4. Return actionable insights + sources
 
@@ -32,7 +27,7 @@ The agent will:
 
 ## When to Use
 
-You often get value out of consulting your episodic memory once you understand what you're being asked. Search memory in these situations:
+Search memory once you understand what you're being asked. Not before.
 
 **After understanding the task:**
 - User asks "how should I..." or "what's the best approach..."
@@ -56,10 +51,5 @@ You often get value out of consulting your episodic memory once you understand w
 
 ## Direct Tool Access (Discouraged)
 
-You CAN use MCP tools directly, but DON'T:
-- `mcp__plugin_episodic-memory_episodic-memory__search`
-- `mcp__plugin_episodic-memory_episodic-memory__show`
-
-Using these directly wastes your context window. Always dispatch the agent instead.
-
-See MCP-TOOLS.md for complete API reference if needed for advanced usage.
+Calling MCP tools directly wastes your context window. Always dispatch the
+subagent instead. See MCP-TOOLS.md for the tool API reference if needed.
