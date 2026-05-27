@@ -11,6 +11,8 @@ export interface ToolCall {
   timestamp: string;
 }
 
+export type ConversationHarness = 'claude' | 'codex';
+
 export interface ConversationExchange {
   id: string;
   project: string;
@@ -29,6 +31,7 @@ export interface ConversationExchange {
   isSidechain?: boolean;
 
   // Session context
+  harness?: ConversationHarness;
   sessionId?: string;
   cwd?: string;
   gitBranch?: string;
@@ -36,6 +39,9 @@ export interface ConversationExchange {
   agentVersion?: string;
   /** @deprecated Use agentVersion instead */
   claudeVersion?: string;
+  agentVersion?: string;
+  model?: string;
+  modelProvider?: string;
 
   // Model metadata (available from Gemini and Pi sessions)
   model?: string;

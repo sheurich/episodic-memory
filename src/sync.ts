@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { SUMMARIZER_CONTEXT_MARKER } from './constants.js';
-import { getExcludedProjects } from './paths.js';
+import { getExcludedProjects, findJsonlFiles } from './paths.js';
+import { formatErrorSentinel, shouldQueueForSummary } from './summary-sentinel.js';
 
 const EXCLUSION_MARKERS = [
   '<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>',
@@ -56,12 +57,13 @@ function copyIfNewer(src: string, dest: string): boolean {
   return true;
 }
 
-function extractSessionIdFromPath(filePath: string): string | null {
-  // Extract session ID from filename: /path/to/abc-123-def.jsonl -> abc-123-def
+export function extractSessionIdFromPath(filePath: string): string | null {
+  // Extract session ID from Claude filename or Codex rollout filename.
   const basename = path.basename(filePath, '.jsonl');
-  // Session IDs are UUIDs, validate format
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(basename)) {
-    return basename;
+  const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/ig;
+  const matches = basename.match(uuidPattern);
+  if (matches && matches.length > 0) {
+    return matches[matches.length - 1];
   }
   return null;
 }
@@ -91,6 +93,7 @@ export async function syncConversations(
   // Walk source directory
   const projects = fs.readdirSync(sourceDir);
   const excludedProjects = getExcludedProjects();
+  const excludedDirSet = new Set(excludedProjects);
 
   for (const project of projects) {
     if (excludedProjects.includes(project)) {
@@ -103,7 +106,7 @@ export async function syncConversations(
 
     if (!stat.isDirectory()) continue;
 
-    const files = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
+    const files = findJsonlFiles(projectPath, excludedDirSet);
 
     for (const file of files) {
       const srcFile = path.join(projectPath, file);
@@ -118,10 +121,12 @@ export async function syncConversations(
           result.skipped++;
         }
 
-        // Check if this file needs a summary (whether newly copied or existing)
+        // Check if this file needs a summary (whether newly copied or existing).
+        // shouldQueueForSummary skips files that already have a real summary or
+        // an empty zero-exchange sentinel, and retries stale error sentinels (#96).
         if (!options.skipSummaries) {
           const summaryPath = destFile.replace('.jsonl', '-summary.txt');
-          if (!fs.existsSync(summaryPath) && !shouldSkipConversation(destFile)) {
+          if (shouldQueueForSummary(summaryPath) && !shouldSkipConversation(destFile)) {
             const sessionId = extractSessionIdFromPath(destFile);
             if (sessionId) {
               filesToSummarize.push({ path: destFile, sessionId });
@@ -198,16 +203,28 @@ export async function syncConversations(
         const exchanges = await parseConversation(filePath, project, filePath);
 
         if (exchanges.length === 0) {
-          continue; // Skip empty conversations
+          // Skip empty conversations — write an empty -summary.txt sentinel so they aren't re-queued forever
+          const summaryPath = filePath.replace('.jsonl', '-summary.txt');
+          fs.writeFileSync(summaryPath, '', 'utf-8');
+          continue;
         }
 
         console.log(`  Summarizing ${path.basename(filePath)} (${exchanges.length} exchanges)...`);
-        const summary = await summarizeConversation(exchanges);
+        const summary = await summarizeConversation(exchanges, sessionId);
 
         const summaryPath = filePath.replace('.jsonl', '-summary.txt');
         fs.writeFileSync(summaryPath, summary, 'utf-8');
         result.summarized++;
       } catch (error) {
+        // Write a structured error sentinel (#96): distinct from the empty
+        // zero-exchange sentinel so a stale failure can self-heal on the next
+        // sync run past the retry threshold. The marker also keeps the error
+        // text on disk for post-hoc diagnosis. Best-effort — if the sentinel
+        // write itself fails, fall through and surface the original error.
+        try {
+          const summaryPath = filePath.replace('.jsonl', '-summary.txt');
+          fs.writeFileSync(summaryPath, formatErrorSentinel(error), 'utf-8');
+        } catch {}
         result.errors.push({
           file: filePath,
           error: `Summary generation failed: ${error instanceof Error ? error.message : String(error)}`

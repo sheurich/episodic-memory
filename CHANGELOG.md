@@ -5,6 +5,135 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2026-05-21
+
+### Fixed
+- Summarization no longer crashes for conversations archived from a different project than the one running sync. Before, every short (≤15 exchange) conversation whose recorded project cwd differed from sync's cwd would silently fail with `Cannot read properties of undefined (reading 'match')`, and the failed file would re-queue forever. The summarizer now passes the recorded cwd through to the Claude Agent SDK and falls back to a non-resume summary when the project directory no longer exists on disk. Multi-project users were the most affected. Thanks to @minyek for the fix (#93).
+- Codex summarization works again for ChatGPT-subscription users. The summarizer used to forward whatever model id was baked into the historical exchange data, including pre-deprecation values like `gpt-5.2-codex`. Codex's `app-server` returns a 400 for any `-codex` suffix variant when authenticating via a ChatGPT account, so older Codex sessions silently fell through to the transcript-text fallback (hurting recall quality). The summarizer now lets Codex pick the default from `~/.codex/config.toml#model`. Operators who need a specific model id can set `EPISODIC_MEMORY_CODEX_MODEL`. Thanks to @monsterxz9 for the fix (#99).
+- Failed summaries no longer pin the head of the sync queue forever. Any transient summarization error (network blip, API rate limit, SDK shape change) used to leave no sentinel on disk, so the same file would re-attempt on every sync run indefinitely. Ten persistent failures at the head of the queue would block every conversation behind them from being summarized. Sync now writes a structured error sentinel and re-attempts after a configurable threshold (default 1 hour, via `EPISODIC_MEMORY_SUMMARY_ERROR_RETRY_HOURS`); verify, stats, and the indexer all distinguish real summaries from error sentinels (#96).
+- Concurrent sync workers no longer race when multiple Claude Code sessions fire SessionStart at the same time. Multi-worktree setups previously spawned one background sync process per session, each trying to write to the same SQLite database (which crashes with `SQLITE_BUSY` on macOS/Linux) and each spawning Claude subprocesses (which exhausts the desktop heap on Windows, crashing workers with `STATUS_DLL_INIT_FAILED`). A single-instance file lock now serializes sync workers; competing workers print `sync already running (pid X); skipping` and exit cleanly (#97).
+- The MCP server wrapper detects partial `node_modules` extractions. An interrupted plugin install could leave a package as just an empty folder (no manifest, no library code), and the previous wrapper declared deps healthy because `node_modules/` itself existed. First launch then crashed with a confusing `ERR_MODULE_NOT_FOUND`. The wrapper now probes each required package's manifest and reruns `npm install` if any are missing, logging which ones (#95 Bug 1).
+- `npm install` exits 0 on Windows. The postinstall step previously used unix-only shell syntax (`2>/dev/null || true`) that fails on cmd.exe, so `npm install` exited non-zero even when every package installed correctly. Now uses a cross-platform Node script. The reporter on #95 saw this and started troubleshooting what they assumed was a broken install — those follow-on diagnostics led to the misidentified Bug 2 (`onnxruntime-common`-not-hoisted), which on reproduction turns out to be a misread of `npm ls`'s logical-tree output (the package is hoisted in practice).
+
+## [1.4.1] - 2026-05-17
+
+### Fixed
+- Sync no longer gets stuck on conversations with no real content. Previously, files with only metadata or stub records re-queued for summarization on every run. Once ten of them piled up at the head of the queue, real conversations behind them stopped getting summarized at all. Now those files are marked as done the first time they're skipped, and the backlog drains. Thanks to @minyek for the fix.
+
+## [1.4.0] - 2026-05-13
+
+### Changed
+- The `remembering-conversations` skill now triggers reliably for personal-fact lookups and other small questions that previously slipped past it. Tested against fresh sessions asking a personal-fact question, the previous description fired the skill 0/5 trials; the new description fires 3/5.
+
+### Removed
+- The `/search-conversations` slash command. Reference past work in natural conversation instead — the `remembering-conversations` skill dispatches the `search-conversations` agent automatically when recall is needed.
+
+## [1.3.1] - 2026-05-13
+
+### Fixed
+- Recall skills now trigger when an agent needs to remember anything learned from prior Claude Code or Codex conversations, including decisions, patterns, solutions, pitfalls, workflows, project context, and lessons from similar work.
+- Search-agent and slash-command descriptions now describe broad recall situations instead of narrowing discovery to explicit user requests or personal facts.
+
+## [1.3.0] - 2026-05-13
+
+### Added
+- Native Codex plugin support with `.codex-plugin/plugin.json`, Codex MCP configuration, plugin hook packaging, and a local development marketplace entry.
+- Codex rollout transcript parsing, display, archiving, indexing, and cross-harness search across Claude Code and Codex conversations.
+- Codex-native summarization through `codex app-server` ephemeral `thread/fork`, with transcript-text fallback when Codex summarization is unavailable.
+- `episodic-memory doctor codex` for checking Codex version, plugin features, MCP registration, hook trust, transcript directory, database, and sync log paths.
+- Opt-in live Codex and Claude E2E scripts that verify archive, summary, index, and MCP recall behavior.
+
+### Changed
+- Recall skill instructions and MCP tool documentation now describe Claude Code and Codex usage, including direct MCP search/read guidance in Codex.
+- CLI help, README setup, and architecture documentation now describe Claude Code plus Codex support.
+
+### Fixed
+- Codex hook trust diagnostics now report when the Episodic Memory hook is already trusted instead of always suggesting `/hooks`.
+- Codex HTML transcript rendering now escapes raw HTML from transcript content before rendering.
+- Codex `local_shell_call_output` items are now paired with local shell tool calls during parsing and included in rendered transcript output.
+
+## [1.2.0] - 2026-05-03
+
+### Better search results
+
+This release upgrades the embedding model used for semantic search. On a 17,000-exchange retrieval test built from real production data, the new model puts the right answer at rank 1 about **53% of the time, up from 47%**. Top-10 accuracy improves from 68% to 75%.
+
+The new model is `bge-small-en-v1.5` (BAAI), replacing `all-MiniLM-L6-v2`. Both produce 384-dimensional embeddings, so storage is unchanged.
+
+### Automatic migration
+
+Existing indexes upgrade themselves in the background. After you install 1.2.0, each `episodic-memory sync` re-embeds up to 500 stored exchanges with the new model. Claude Code triggers a sync at every session start, so most indexes finish migrating after roughly 60 sync runs — a few days of normal use.
+
+During sync you'll see a line like this on stderr:
+
+    episodic-memory: re-embedding batch of 500 (29569 stale total)...
+
+Search keeps working throughout. The index holds a mix of old and new embeddings until migration finishes; ranking is slightly noisier but never broken.
+
+To finish faster, run a sync with a larger batch:
+
+    EPISODIC_MEMORY_MIGRATION_BATCH=5000 episodic-memory sync
+
+That takes about a minute per call on a recent Mac.
+
+If two syncs run at once, only one re-embeds; the other skips its migration step. A crash mid-batch leaves the unfinished rows tagged for migration, and the next sync picks up where the previous one stopped.
+
+### Other notes
+
+- **First sync after upgrade** downloads a new 34 MB model file.
+- **Rollback to 1.1.x is safe.** Search still works against a partially-migrated index.
+- **Resolves #82** (ONNX runtime crash on Node 23 and earlier) as a side effect of the underlying library upgrade.
+
+## [1.1.2] - 2026-05-03
+
+### Fixed
+- **Critical: recursive process explosion from auto-sync** (#87, #88, thanks @kaankoken and @materemias for the diagnosis):
+  - The `persistSession: false` fix in 1.1.0 (#83) prevented the SDK-spawned Claude subprocess from *saving* its session JSONL, but did not stop the subprocess from *firing the SessionStart hook*. That re-ran `episodic-memory sync --background`, which re-summarized, which spawned another Claude subprocess, which fired the hook again — fanning out hundreds of detached processes, saturating CPU, and burning API quota.
+  - Added a reentrancy guard env var `EPISODIC_MEMORY_SUMMARIZER_GUARD`, set when calling the SDK's `query()` and inherited by the spawned subprocess. The `sync-cli` entry point checks the guard at startup and exits silently when it's set, breaking the recursive cascade at its only feasible point.
+  - Coverage: unit tests for `getApiEnv()` (always sets the guard) and `shouldSkipReentrantSync()`, plus an integration test that spawns `dist/sync-cli.js` with the guard env and asserts a clean exit without doing work.
+  - Anyone affected by the cascade should update to 1.1.2 immediately. If 1.1.0 or 1.1.1 had been spawning processes, kill any lingering `episodic-memory` and `claude-agent-sdk` children before restarting Claude Code.
+
+## [1.1.1] - 2026-05-03
+
+### Fixed
+- **MCP server now reports the actual plugin version** in its protocol handshake instead of the long-stale hardcoded `1.0.0`. Inspector tools and any client logging the server identity will now see the real version.
+
+### Changed
+- **Single source of truth for version numbers.** `package.json` is the source; `src/version.ts` is generated from it at prebuild/pretest time and is referenced by `mcp-server.ts`. Source code can no longer drift from the declared package version.
+- **Drift test for manifest files.** A new `test/version-consistency.test.ts` asserts `package.json`, `.claude-plugin/plugin.json`, and `.claude-plugin/marketplace.json` all agree. CI fails if anyone bumps one without the others.
+- **`scripts/bump-version.sh` + `.version-bump.json`** for one-command version bumps with built-in audit (greps the repo for stale version strings in undeclared files). Run `./scripts/bump-version.sh X.Y.Z` to update all declared files; `--check` reports current state, `--audit` scans for stragglers.
+
+## [1.1.0] - 2026-05-02
+
+### Added
+- **Search metadata filters** (#63, thanks @jwk2601 for the design): `--project`, `--session-id`, and `--git-branch` flags scope results by exact-match project name, session ID, or git branch. Available on the CLI and the MCP `search` tool. Filter values bind as positional SQL parameters; the existing `--after`/`--before` time filters were converted from string interpolation to bound parameters in the same change.
+- **API configuration env vars for summarization** (#37, thanks @techjoec):
+  - `EPISODIC_MEMORY_API_MODEL` — override the summarizer model (default: haiku)
+  - `EPISODIC_MEMORY_API_MODEL_FALLBACK` — fallback model on errors (default: sonnet)
+  - `EPISODIC_MEMORY_API_BASE_URL` — custom Anthropic endpoint
+  - `EPISODIC_MEMORY_API_TOKEN` — auth token for custom endpoint
+  - `EPISODIC_MEMORY_API_TIMEOUT_MS` — request timeout
+
+### Changed
+- **Bumped `@anthropic-ai/claude-agent-sdk` to 0.2.x** (transitively requires zod 4). Required for the `persistSession` option used by the #83 fix.
+- **`tool_calls` schema now uses `ON DELETE CASCADE`** (#81). Fresh databases create the table with cascade; existing databases get a one-time migration that recreates `tool_calls` with cascade and drops any orphaned rows. The migration is idempotent and runs only when the schema lacks `ON DELETE CASCADE`.
+- **`exclude.txt` matches nested directory names** (#80, thanks @rohitgehe05 for the diagnosis): adding `subagents` now also skips `<project>/<session>/subagents/agent-*.jsonl` instead of only matching top-level project directories.
+
+### Fixed
+- **Indexer skipped appended exchanges** (#84, thanks @jamster for the diagnosis and detection script): the `COUNT(*) > 0` skip was replaced with a `MAX(line_end)` high-water mark, so transcripts that grow after their first index pass now pick up their tail. Resumed sessions and SessionStart syncs that race the still-running session no longer silently lose the trailing content.
+- **Search similarity scores were wrong** (#55, thanks @gmax111): `1 - row.distance` was treating L2 distance as cosine distance. For unit-normalized embeddings the correct conversion is `1 - d²/2`. Result ordering was already correct (the formula was monotonic in distance), so this is a display/aggregation correction, not a ranking change.
+- **Summarizer session pollution** (#83, thanks @benseeley for the detailed reproduction): `persistSession: false` is now passed to the SDK, so summarization no longer creates fake session JSONLs in `~/.claude/projects/<cwd-slug>/`.
+- **`deleteExchange` FK crash** (#81, thanks @rohitgehe05): `index --repair` no longer fails with `SQLITE_CONSTRAINT_FOREIGNKEY` on exchanges that have associated tool_calls.
+- **Windows hook fails on home directories with spaces** (#75, thanks @phantomsecurityandfire and @officialasishkumar): the SessionStart hook command now quotes `${CLAUDE_PLUGIN_ROOT}`.
+- **MCP install fails with `ETARGET` on stale npm cache** (#76, thanks @DarkbyteAT and @mvanhorn): removed `--prefer-offline` from the wrapper's `npm install` invocation.
+- **MCP protocol corruption from embedding model output** (#48): the embedding model's stdout is now redirected to stderr.
+- **Orphaned MCP processes** (#54): added SIGHUP handler and stdin-close detection to the wrapper.
+- **`exclude.txt` ignored at sync time** (#38): now honored by sync and verify commands.
+- **Bundled file-discovery and path fixes** (#42, #50, #57, #62, #68, #70, #72): sidechain filtering in search, SessionStart `clear` matcher, `CLAUDE_CONFIG_DIR` support, recursive subagent file discovery, support for both `~/.claude/projects` and `~/.claude/transcripts`, and explicit surfacing of summarization failures.
+
+### Documentation
+- Fix npm install instructions to use the GitHub source (#71).
+
 ## [1.0.15] - 2025-12-17
 
 ### Changed

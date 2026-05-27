@@ -13,6 +13,73 @@ function ensureDir(dir: string): string {
 }
 
 /**
+ * Get the Claude Code configuration directory.
+ * Supports CLAUDE_CONFIG_DIR for multiple profiles.
+ * Falls back to ~/.claude when not set.
+ */
+export function getClaudeDir(): string {
+  return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+}
+
+/**
+ * Get the Codex configuration directory.
+ * Supports CODEX_HOME for alternate profiles.
+ * Falls back to ~/.codex when not set.
+ */
+export function getCodexDir(): string {
+  return process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+}
+
+/**
+ * Get all directories where supported harnesses store conversation files.
+ * Checks Claude Code legacy (projects/) and current (transcripts/) locations,
+ * plus Codex sessions.
+ * Returns only directories that exist.
+ */
+export function getConversationSourceDirs(): string[] {
+  const testDir = process.env.TEST_PROJECTS_DIR;
+  if (testDir) return [testDir];
+
+  const claudeDir = getClaudeDir();
+  const codexDir = getCodexDir();
+  return [
+    path.join(claudeDir, 'projects'),
+    path.join(claudeDir, 'transcripts'),
+    path.join(codexDir, 'sessions'),
+  ].filter(d => fs.existsSync(d));
+}
+
+/**
+ * Recursively find all .jsonl files under a directory.
+ * Returns paths relative to the given directory.
+ *
+ * `excludedDirNames` skips any subdirectory whose name matches an entry in
+ * the set, at any depth. Top-level project skipping at the caller is the
+ * usual case; this parameter handles nested directories like `subagents/`
+ * inside session UUIDs (#80).
+ */
+export function findJsonlFiles(dir: string, excludedDirNames?: ReadonlySet<string>): string[] {
+  const results: string[] = [];
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+        results.push(entry.name);
+      } else if (entry.isDirectory()) {
+        if (excludedDirNames?.has(entry.name)) continue;
+        const subDir = path.join(dir, entry.name);
+        for (const f of findJsonlFiles(subDir, excludedDirNames)) {
+          results.push(path.join(entry.name, f));
+        }
+      }
+    }
+  } catch {
+    // Directory might not be readable
+  }
+  return results;
+}
+
+/**
  * Get the personal superpowers directory
  *
  * Precedence:

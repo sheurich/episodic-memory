@@ -2,7 +2,7 @@
 
 Semantic search for coding agent conversations. Remember past discussions, decisions, and patterns.
 
-Supports **Claude Code**, **Pi**, **Gemini CLI**, and **OpenCode**.
+Supports **Claude Code**, **Codex**, **Pi**, **Gemini CLI**, and **OpenCode**.
 
 ## Testimonial
 
@@ -85,10 +85,44 @@ The MCP server must be configured separately in `~/.pi/agent/mcp.json`:
 }
 ```
 
+### As a Codex plugin
+
+This repository includes a Codex plugin manifest at `.codex-plugin/plugin.json`.
+Codex support requires `codex-cli 0.130.0` or newer.
+
+For local testing, build the plugin, add this repo as a local marketplace, then
+install/enable it from `/plugins`:
+
+```bash
+npm run build
+codex features enable plugin_hooks
+codex plugin marketplace add /path/to/episodic-memory
+```
+
+Then start Codex, open `/plugins`, install and enable `episodic-memory` from
+`Episodic Memory Dev`, open `/hooks`, review the Episodic Memory hook, and press
+`t` to trust it.
+
+The Codex plugin:
+- Syncs conversations from `~/.codex/sessions`
+- Exposes the same MCP search/read tools
+- Installs the same memory skill, with Codex-specific direct MCP guidance
+- Runs a `SessionStart` hook after the user reviews and trusts it in `/hooks`
+
+Enable plugin hooks before relying on automatic sync:
+
+```bash
+codex features enable plugin_hooks
+```
+
+Then open `/hooks` in Codex, review the Episodic Memory hook, and press `t` to trust it. New or modified Codex hooks are listed but do not run until trusted.
+
+See [docs/CODEX.md](docs/CODEX.md) for the full Codex setup, trust, troubleshooting, and E2E test workflow.
+
 ### As an npm package
 
 ```bash
-npm install episodic-memory
+npm install -g github:obra/episodic-memory
 ```
 
 ## Usage
@@ -96,7 +130,7 @@ npm install episodic-memory
 ### Quick Start
 
 ```bash
-# Sync conversations from Claude Code and index them
+# Sync conversations from Claude Code and Codex and index them
 episodic-memory sync
 
 # Search your conversation history
@@ -104,6 +138,9 @@ episodic-memory search "React Router authentication"
 
 # View index statistics
 episodic-memory stats
+
+# Diagnose Codex setup
+episodic-memory doctor codex
 
 # Display a conversation
 episodic-memory show path/to/conversation.jsonl
@@ -143,13 +180,14 @@ episodic-memory-index
 episodic-memory-search "query"
 ```
 
-### In Claude Code
+### In Claude Code or Codex
 
-The plugin automatically indexes conversations at session end. Use the search command:
+The plugin automatically syncs and indexes conversations from the harness that starts it. Reference past work in natural conversation — the `remembering-conversations` skill dispatches the `search-conversations` agent automatically when recall is needed. Example prompts:
 
-```
-/search-conversations
-```
+- "How did we handle authentication in React Router?"
+- "The conversation about async testing patterns"
+- "Error message about sqlite-vec initialization"
+- "Git commit SHA for the routing refactor"
 
 Or reference past work in natural conversation — Claude will search when appropriate.
 
@@ -157,9 +195,11 @@ Or reference past work in natural conversation — Claude will search when appro
 
 The extension indexes conversations on session start. The `remembering-conversations` skill triggers automatic search when you reference past work, ask "how should I...", or get stuck on a problem. It dispatches a `search-conversations` subagent to keep your main context window clean.
 
+In Codex, the skill guides the agent to use the episodic-memory MCP search/read tools directly when an agent-dispatch path is not available.
+
 ## API Configuration
 
-By default, episodic-memory uses your Claude Code authentication for summarization (Claude Code only).
+By default, episodic-memory uses your Claude Code authentication for Claude Code summarization. Codex-indexed sessions with a session ID are summarized through `codex app-server` by creating an ephemeral `thread/fork`, so the summary can use Codex session context and reasoning summaries without appending to the original rollout.
 
 To route summarization through a custom Anthropic-compatible endpoint or override the model:
 
@@ -176,9 +216,14 @@ export EPISODIC_MEMORY_API_TOKEN=your-token
 
 # Increase timeout for slow endpoints (milliseconds)
 export EPISODIC_MEMORY_API_TIMEOUT_MS=3000000
+
+# Override Codex binary path if needed (default: codex)
+export EPISODIC_MEMORY_CODEX_BIN=/path/to/codex
 ```
 
-These settings only affect episodic-memory's summarization calls, not your interactive Claude sessions.
+These settings only affect episodic-memory's summarization calls, not your interactive Claude Code or Codex sessions.
+
+Codex summarization requires `codex-cli 0.130.0` or newer. If Codex app-server summarization is unavailable, sync logs the reason and falls back to transcript-text summarization.
 
 ### What's Affected
 
@@ -193,13 +238,14 @@ These settings only affect episodic-memory's summarization calls, not your inter
 
 ### `episodic-memory sync`
 
-**Recommended for session-end hooks.** Copies new Claude Code conversations from `~/.claude/projects` to archive and indexes them.
+**Recommended for plugin hooks.** Copies new conversations from `~/.claude/projects`, `~/.claude/transcripts`, `~/.codex/sessions`, `~/.pi/agent/sessions`, `~/.gemini/tmp`, and `~/.local/share/opencode` to archive and indexes them.
 
 Features:
 - Only copies new or modified files (fast on subsequent runs)
 - Generates embeddings for semantic search
 - Atomic operations - safe to run concurrently
 - Idempotent - safe to call repeatedly
+- Background hook output is written to `~/.config/superpowers/logs/episodic-memory.log` unless `EPISODIC_MEMORY_CONFIG_DIR` changes the memory directory
 
 **Usage in Claude Code:**
 Add to `.claude/hooks/session-end`:
@@ -225,6 +271,36 @@ Display index statistics including conversation counts, date ranges, and project
 ```bash
 episodic-memory stats
 ```
+
+### `episodic-memory doctor`
+
+Diagnose local integration issues.
+
+```bash
+episodic-memory doctor codex
+```
+
+The Codex doctor checks the Codex version, plugin hook feature state, MCP server registration, transcript directory, database path, and background sync log path.
+
+### Codex E2E Verification
+
+The repository includes an opt-in live Codex E2E test. It creates an isolated temporary `CODEX_HOME`, installs a copied plugin bundle, trusts the hook, runs Codex sessions in `tmux`, and verifies archive -> summary -> index -> MCP recall.
+
+```bash
+npm run build
+EPISODIC_MEMORY_RUN_CODEX_E2E=1 npm run test:codex-e2e
+```
+
+### Claude E2E Verification
+
+The repository also includes an opt-in live Claude Code E2E test. It loads this repo as a session plugin with `--plugin-dir`, constrains the hook to a temporary transcript source, and verifies archive -> summary -> index -> MCP recall.
+
+```bash
+npm run build
+EPISODIC_MEMORY_RUN_CLAUDE_E2E=1 npm run test:claude-e2e
+```
+
+This test uses your normal Claude Code auth and writes small test transcripts to your normal Claude transcript directory. The archive and index are isolated in a temporary `EPISODIC_MEMORY_CONFIG_DIR`.
 
 ### `episodic-memory index`
 
@@ -263,17 +339,19 @@ open output.html
 - **Parsers** - Per-agent session parsers (Claude Code, Pi, Gemini CLI, OpenCode)
 - **CLI tools** - Unified command-line interface for manual use
 - **MCP Server** - Model Context Protocol server exposing search and conversation tools
-- **Claude Code plugin** - Auto-indexing, MCP tools, hooks
+- **Claude Code plugin** - Integration with Claude Code (auto-indexing, MCP tools, hooks)
+- **Codex plugin** - Integration with Codex (manifest, MCP config, hooks, skills)
 - **Pi extension** - Session-start indexing, search skill, subagent
 
 ## How It Works
 
-1. **Discover** - Finds conversation files from all supported agents
-   - Claude Code: `~/.claude/projects`
-   - Pi: `~/.pi/agent/sessions`
-   - Gemini CLI: `~/.gemini/sessions`
-   - OpenCode: `~/.local/share/opencode`
-2. **Parse** - Extracts user-agent exchanges from each agent's session format
+1. **Sync** - Copies conversation files from all supported agent directories to archive
+2. **Parse** - Extracts user-agent exchanges from each format:
+   - Claude Code: `~/.claude/projects` and `~/.claude/transcripts` (JSONL)
+   - Codex: `~/.codex/sessions` (rollout JSONL)
+   - Pi: `~/.pi/agent/sessions` (JSONL)
+   - Gemini CLI: `~/.gemini/tmp` (session JSON)
+   - OpenCode: `~/.local/share/opencode` (SQLite)
 3. **Embed** - Generates vector embeddings using Transformers.js (local, offline)
 4. **Index** - Stores in SQLite with sqlite-vec for fast similarity search
 5. **Search** - Semantic search using vector similarity or exact text matching
@@ -300,11 +378,11 @@ The marker can appear in any message (user or assistant) and excludes the entire
 
 ## MCP Server
 
-Episodic-memory provides an MCP (Model Context Protocol) server that exposes tools for searching and viewing conversations. In Claude Code, the plugin configures this automatically. In Pi, configure it via `mcp.json` (see Installation).
+When installed as a Claude Code or Codex plugin, episodic-memory provides an MCP (Model Context Protocol) server that exposes tools for searching and viewing conversations. In Pi, configure it via `mcp.json` (see Installation).
 
 ### Available MCP Tools
 
-#### `episodic_memory_search`
+#### `search`
 
 Search indexed conversations using semantic similarity or exact text matching.
 
@@ -339,6 +417,8 @@ Search indexed conversations using semantic similarity or exact text matching.
 - `after` (string, optional): Only show conversations after YYYY-MM-DD
 - `before` (string, optional): Only show conversations before YYYY-MM-DD
 - `response_format` ('markdown' | 'json'): Output format (default: 'markdown')
+
+#### `read`
 
 #### `episodic_memory_read`
 

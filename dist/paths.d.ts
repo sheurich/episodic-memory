@@ -1,4 +1,33 @@
 /**
+ * Get the Claude Code configuration directory.
+ * Supports CLAUDE_CONFIG_DIR for multiple profiles.
+ * Falls back to ~/.claude when not set.
+ */
+export declare function getClaudeDir(): string;
+/**
+ * Get the Codex configuration directory.
+ * Supports CODEX_HOME for alternate profiles.
+ * Falls back to ~/.codex when not set.
+ */
+export declare function getCodexDir(): string;
+/**
+ * Get all directories where supported harnesses store conversation files.
+ * Checks Claude Code legacy (projects/) and current (transcripts/) locations,
+ * plus Codex sessions.
+ * Returns only directories that exist.
+ */
+export declare function getConversationSourceDirs(): string[];
+/**
+ * Recursively find all .jsonl files under a directory.
+ * Returns paths relative to the given directory.
+ *
+ * `excludedDirNames` skips any subdirectory whose name matches an entry in
+ * the set, at any depth. Top-level project skipping at the caller is the
+ * usual case; this parameter handles nested directories like `subagents/`
+ * inside session UUIDs (#80).
+ */
+export declare function findJsonlFiles(dir: string, excludedDirNames?: ReadonlySet<string>): string[];
+/**
  * Get the personal superpowers directory
  *
  * Precedence:

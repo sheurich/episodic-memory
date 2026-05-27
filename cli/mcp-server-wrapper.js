@@ -8,6 +8,7 @@ import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { findMissingDeps } from './install-check.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -25,7 +26,7 @@ function runNpmInstall() {
     console.error('This may take 30-60 seconds...');
 
     // Install dependencies - npm will auto-install optionalDependencies for current platform
-    const child = spawn(npmCommand, ['install', '--prefer-offline', '--no-audit', '--no-fund'], {
+    const child = spawn(npmCommand, ['install', '--no-audit', '--no-fund'], {
       cwd: PLUGIN_ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: isWindows // On Windows, we need shell: true to find npm.cmd
@@ -60,9 +61,14 @@ function runNpmInstall() {
 
 async function main() {
   try {
-    // Check if node_modules exists
-    const nodeModulesPath = join(PLUGIN_ROOT, 'node_modules');
-    if (!existsSync(nodeModulesPath)) {
+    // Probe each required runtime dependency's package.json — not just the
+    // node_modules directory. A partial extraction (folder exists but the
+    // package is missing its manifest and lib/) would slip past an existsSync
+    // check on node_modules alone and crash the server with ERR_MODULE_NOT_FOUND
+    // *after* the wrapper has handed off to dist/mcp-server.js (#95 Bug 1).
+    const missing = findMissingDeps(PLUGIN_ROOT);
+    if (missing.length > 0) {
+      console.error(`Missing dependencies under node_modules: ${missing.join(', ')}`);
       await runNpmInstall();
     }
 
@@ -84,6 +90,14 @@ async function main() {
     // Forward signals to the child process
     process.on('SIGTERM', () => child.kill('SIGTERM'));
     process.on('SIGINT', () => child.kill('SIGINT'));
+    process.on('SIGHUP', () => child.kill('SIGHUP'));
+
+    // Detect parent process death via stdin close
+    // When Claude exits (normally or abnormally), stdin will close
+    process.stdin.on('end', () => {
+      child.kill();
+      process.exit(0);
+    });
 
     child.on('exit', (code, signal) => {
       if (signal) {

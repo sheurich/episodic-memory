@@ -1,7 +1,8 @@
 import Database from 'better-sqlite3';
 import { initDatabase } from './db.js';
-import { initEmbeddings, generateEmbedding } from './embeddings.js';
+import { initEmbeddings, generateQueryEmbedding } from './embeddings.js';
 import { SearchResult, ConversationExchange, MultiConceptResult } from './types.js';
+import { isErroredSentinel } from './summary-sentinel.js';
 import fs from 'fs';
 import readline from 'readline';
 
@@ -10,6 +11,111 @@ export interface SearchOptions {
   mode?: 'vector' | 'text' | 'both';
   after?: string;  // ISO date string
   before?: string; // ISO date string
+  project?: string;     // exact match against e.project
+  session_id?: string;  // exact match against e.session_id
+  git_branch?: string;  // exact match against e.git_branch
+}
+
+/**
+ * Build the AND-clause and bound-parameter list that constrains a search
+ * by the optional time and metadata filters. Bound parameters keep us
+ * safe from SQL injection without regex-based input scrubbing.
+ */
+function buildSearchFilters(options: SearchOptions): { sql: string; params: unknown[] } {
+  const parts: string[] = [];
+  const params: unknown[] = [];
+  if (options.after) {
+    parts.push('e.timestamp >= ?');
+    params.push(options.after);
+  }
+  if (options.before) {
+    parts.push('e.timestamp <= ?');
+    params.push(options.before);
+  }
+  if (options.project) {
+    parts.push('e.project = ?');
+    params.push(options.project);
+  }
+  if (options.session_id) {
+    parts.push('e.session_id = ?');
+    params.push(options.session_id);
+  }
+  if (options.git_branch) {
+    parts.push('e.git_branch = ?');
+    params.push(options.git_branch);
+  }
+  return {
+    sql: parts.length ? `AND ${parts.join(' AND ')}` : '',
+    params,
+  };
+}
+
+function hasMetadataFilters(options: SearchOptions): boolean {
+  return Boolean(options.project || options.session_id || options.git_branch);
+}
+
+const EXCHANGE_SELECT_COLUMNS = `
+        e.id,
+        e.project,
+        e.timestamp,
+        e.user_message,
+        e.assistant_message,
+        e.archive_path,
+        e.line_start,
+        e.line_end,
+        e.parent_uuid,
+        e.is_sidechain,
+        e.harness,
+        e.session_id,
+        e.cwd,
+        e.git_branch,
+        e.claude_version,
+        e.agent_version,
+        e.model,
+        e.model_provider,
+        e.thinking_level,
+        e.thinking_disabled,
+        e.thinking_triggers`;
+
+function exchangeFromRow(row: any): ConversationExchange {
+  return {
+    id: row.id,
+    project: row.project,
+    timestamp: row.timestamp,
+    userMessage: row.user_message,
+    assistantMessage: row.assistant_message,
+    archivePath: row.archive_path,
+    lineStart: row.line_start,
+    lineEnd: row.line_end,
+    parentUuid: row.parent_uuid || undefined,
+    isSidechain: Boolean(row.is_sidechain),
+    harness: row.harness,
+    sessionId: row.session_id || undefined,
+    cwd: row.cwd || undefined,
+    gitBranch: row.git_branch || undefined,
+    claudeVersion: row.claude_version || undefined,
+    agentVersion: row.agent_version || undefined,
+    model: row.model || undefined,
+    modelProvider: row.model_provider || undefined,
+    thinkingLevel: row.thinking_level || undefined,
+    thinkingDisabled: row.thinking_disabled === null ? undefined : Boolean(row.thinking_disabled),
+    thinkingTriggers: row.thinking_triggers || undefined,
+  };
+}
+
+/**
+ * Convert an L2 (Euclidean) distance between two unit-normalized vectors
+ * into a cosine similarity in [-1, 1].
+ *
+ * For unit vectors u, v:  ||u - v||^2 = 2 - 2 * cos(u, v)
+ * Therefore:               cos(u, v) = 1 - d^2 / 2
+ *
+ * Embeddings written by src/embeddings.ts are normalized at write time, so
+ * the L2 distance returned by sqlite-vec satisfies the unit-vector identity.
+ */
+export function l2DistanceToCosineSimilarity(distance: number): number {
+  const similarity = 1 - (distance * distance) / 2;
+  return Math.max(-1, Math.min(1, similarity));
 }
 
 function validateISODate(dateStr: string, paramName: string): void {
@@ -38,65 +144,54 @@ export async function searchConversations(
 
   let results: any[] = [];
 
-  // Build time filter clause
-  const timeFilter = [];
-  if (after) timeFilter.push(`e.timestamp >= '${after}'`);
-  if (before) timeFilter.push(`e.timestamp <= '${before}'`);
-  const timeClause = timeFilter.length > 0 ? `AND ${timeFilter.join(' AND ')}` : '';
+  const { sql: filterClause, params: filterParams } = buildSearchFilters(options);
 
   if (mode === 'vector' || mode === 'both') {
-    // Vector similarity search
+    // Vector similarity search.
+    // vec0 applies KNN before WHERE, so when extra metadata filters are
+    // active we ask for more candidates than `limit` and trim afterwards.
     await initEmbeddings();
-    const queryEmbedding = await generateEmbedding(query);
+    const queryEmbedding = await generateQueryEmbedding(query);
+    const k = hasMetadataFilters(options) ? limit * 3 : limit;
 
     const stmt = db.prepare(`
       SELECT
-        e.id,
-        e.project,
-        e.timestamp,
-        e.user_message,
-        e.assistant_message,
-        e.archive_path,
-        e.line_start,
-        e.line_end,
-        e.source,
+        ${EXCHANGE_SELECT_COLUMNS},
         vec.distance
       FROM vec_exchanges AS vec
       JOIN exchanges AS e ON vec.id = e.id
       WHERE vec.embedding MATCH ?
         AND k = ?
-        ${timeClause}
+        AND e.is_sidechain = 0
+        ${filterClause}
       ORDER BY vec.distance ASC
     `);
 
     results = stmt.all(
       Buffer.from(new Float32Array(queryEmbedding).buffer),
-      limit
+      k,
+      ...filterParams
     );
+    if (results.length > limit) {
+      results = results.slice(0, limit);
+    }
   }
 
   if (mode === 'text' || mode === 'both') {
     // Text search
     const textStmt = db.prepare(`
       SELECT
-        e.id,
-        e.project,
-        e.timestamp,
-        e.user_message,
-        e.assistant_message,
-        e.archive_path,
-        e.line_start,
-        e.line_end,
-        e.source,
+        ${EXCHANGE_SELECT_COLUMNS},
         0 as distance
       FROM exchanges AS e
       WHERE (e.user_message LIKE ? OR e.assistant_message LIKE ?)
-        ${timeClause}
+        AND e.is_sidechain = 0
+        ${filterClause}
       ORDER BY e.timestamp DESC
       LIMIT ?
     `);
 
-    const textResults = textStmt.all(`%${query}%`, `%${query}%`, limit);
+    const textResults = textStmt.all(`%${query}%`, `%${query}%`, ...filterParams, limit);
 
     if (mode === 'both') {
       // Merge and deduplicate by ID
@@ -114,23 +209,17 @@ export async function searchConversations(
   db.close();
 
   return results.map((row: any) => {
-    const exchange: ConversationExchange = {
-      id: row.id,
-      project: row.project,
-      timestamp: row.timestamp,
-      userMessage: row.user_message,
-      assistantMessage: row.assistant_message,
-      archivePath: row.archive_path,
-      lineStart: row.line_start,
-      lineEnd: row.line_end,
-      source: row.source || 'claude',
-    };
+    const exchange = exchangeFromRow(row);
 
-    // Try to load summary if available
+    // Try to load summary if available. Skip error sentinels (#96) so failed
+    // summarizations don't surface as the conversation's summary in results.
     const summaryPath = row.archive_path.replace('.jsonl', '-summary.txt');
     let summary: string | undefined;
     if (fs.existsSync(summaryPath)) {
-      summary = fs.readFileSync(summaryPath, 'utf-8').trim();
+      const raw = fs.readFileSync(summaryPath, 'utf-8');
+      if (!isErroredSentinel(raw)) {
+        summary = raw.trim();
+      }
     }
 
     // Create snippet (first 200 chars, collapse newlines)
@@ -139,7 +228,7 @@ export async function searchConversations(
 
     return {
       exchange,
-      similarity: mode === 'text' ? undefined : 1 - row.distance,
+      similarity: mode === 'text' ? undefined : l2DistanceToCosineSimilarity(row.distance),
       snippet,
       summary
     } as SearchResult & { summary?: string };
@@ -188,9 +277,8 @@ export async function formatResults(results: Array<SearchResult & { summary?: st
     const date = new Date(result.exchange.timestamp).toISOString().split('T')[0];
     const simPct = result.similarity !== undefined ? Math.round(result.similarity * 100) : null;
 
-    // Header with source and match percentage
-    const sourceLabel = result.exchange.source ? result.exchange.source.toUpperCase() : 'CLAUDE';
-    output += `${index + 1}. [${sourceLabel}] [${result.exchange.project}, ${date}]`;
+    // Header with match percentage
+    output += `${index + 1}. [${result.exchange.project}, ${date}]`;
     if (simPct !== null) {
       output += ` - ${simPct}% match`;
     }
@@ -306,9 +394,8 @@ export async function formatMultiConceptResults(
     const date = new Date(result.exchange.timestamp).toISOString().split('T')[0];
     const avgPct = Math.round(result.averageSimilarity * 100);
 
-    // Header with source and average match percentage
-    const sourceLabel = result.exchange.source ? result.exchange.source.toUpperCase() : 'CLAUDE';
-    output += `${index + 1}. [${sourceLabel}] [${result.exchange.project}, ${date}] - ${avgPct}% avg match\n`;
+    // Header with average match percentage
+    output += `${index + 1}. [${result.exchange.project}, ${date}] - ${avgPct}% avg match\n`;
 
     // Show individual concept scores
     const scores = result.conceptSimilarities
@@ -342,4 +429,3 @@ export async function formatMultiConceptResults(
 
   return output;
 }
-

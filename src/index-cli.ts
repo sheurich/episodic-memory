@@ -124,14 +124,16 @@ async function main() {
       case 'index-all':
       default:
         if (command === 'index-all-sources' || getSources()) {
-          // Multi-source indexing (Claude + Gemini + Pi)
+          // Claude+Codex via the upstream-maintained pipeline
+          await indexConversations(undefined, undefined, concurrency, noSummaries);
+          // Gemini, Pi, OpenCode via the ConversationSource registry
           await indexAllSources({
             sources: getSources(),
             concurrency,
             noSummaries,
           });
         } else {
-          // Legacy Claude-only indexing
+          // Default: Claude+Codex only
           await indexConversations(undefined, undefined, concurrency, noSummaries);
         }
         break;
