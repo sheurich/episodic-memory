@@ -307,6 +307,24 @@ The MCP server can also be used outside of Claude Code with any MCP-compatible c
 episodic-memory-mcp-server
 ```
 
+### Native module and Node.js version pinning
+
+`better-sqlite3` is an ABI-bound native module: the binary compiled at install
+time must match the Node.js version that runs the MCP server at runtime. If
+your MCP client config pins a specific node binary (e.g. `node@24` via
+Homebrew), the module must be built with that same binary.
+
+`postinstall` attempts this automatically. If the MCP server fails on startup
+with a `NODE_MODULE_VERSION` mismatch, rebuild explicitly:
+
+```bash
+# Rebuilds against Homebrew node@24 (or set NODE24=/path/to/node to override)
+npm run rebuild:native
+```
+
+Run `rebuild:native` again after any `npm install`, `brew upgrade node@24`, or
+change to the node binary referenced in your MCP client config.
+
 ## Development
 
 ```bash
