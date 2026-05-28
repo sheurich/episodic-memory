@@ -143,6 +143,7 @@ export async function parsePiConversation(
         sessionId,
         cwd: sessionCwd,
         model: currentModel,
+        modelProvider: currentProvider,
         provider: currentProvider,
         thinkingLevel: currentThinkingLevel,
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined

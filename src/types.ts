@@ -23,7 +23,7 @@ export interface ConversationExchange {
   lineStart: number;
   lineEnd: number;
 
-  /** Which agent produced this exchange */
+  /** Indexed source bucket; Codex transcripts are stored under Claude and distinguished by harness. */
   source: AgentSource;
 
   // Conversation structure
@@ -39,12 +39,11 @@ export interface ConversationExchange {
   agentVersion?: string;
   /** @deprecated Use agentVersion instead */
   claudeVersion?: string;
-  agentVersion?: string;
+
+  // Model metadata (available from Gemini, Pi, OpenCode, and Codex sessions)
   model?: string;
   modelProvider?: string;
-
-  // Model metadata (available from Gemini and Pi sessions)
-  model?: string;
+  /** @deprecated Use modelProvider instead */
   provider?: string;
 
   // Thinking metadata

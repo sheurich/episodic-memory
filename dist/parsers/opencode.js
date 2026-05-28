@@ -194,6 +194,7 @@ function buildExchanges(session, messages, parts, projectName, archivePath) {
             cwd: session.directory,
             agentVersion: session.version,
             model: lastModel,
+            modelProvider: lastProvider,
             provider: lastProvider,
             toolCalls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
         });

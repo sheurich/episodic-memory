@@ -282,6 +282,7 @@ function buildExchanges(
       cwd: session.directory,
       agentVersion: session.version,
       model: lastModel,
+      modelProvider: lastProvider,
       provider: lastProvider,
       toolCalls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
     });

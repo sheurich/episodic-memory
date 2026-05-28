@@ -59,6 +59,43 @@ describe('database migration', () => {
     migratedDb.close();
   });
 
+  it('backfills source from multi-source archive paths', () => {
+    const db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE exchanges (
+        id TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        user_message TEXT NOT NULL,
+        assistant_message TEXT NOT NULL,
+        archive_path TEXT NOT NULL,
+        line_start INTEGER NOT NULL,
+        line_end INTEGER NOT NULL,
+        embedding BLOB
+      )
+    `);
+    const insert = db.prepare(`
+      INSERT INTO exchanges
+      (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end)
+      VALUES (?, ?, '2024-01-01T00:00:00Z', 'user', 'assistant', ?, 1, 2)
+    `);
+    insert.run('pi-row', 'project-a', '/tmp/config/superpowers/conversation-archive/pi/project-a/session.jsonl');
+    insert.run('gemini-row', 'project-b', '/tmp/config/superpowers/conversation-archive/gemini/project-b/session.jsonl');
+    insert.run('opencode-row', 'project-c', '/tmp/config/superpowers/conversation-archive/opencode/project-c/session.jsonl');
+    insert.run('claude-row', 'pi', '/tmp/config/superpowers/conversation-archive/pi/session.jsonl');
+    db.close();
+
+    const migratedDb = initDatabase();
+    const rows = migratedDb.prepare(`SELECT id, source FROM exchanges ORDER BY id`).all() as Array<{ id: string; source: string }>;
+    expect(rows).toEqual([
+      { id: 'claude-row', source: 'claude' },
+      { id: 'gemini-row', source: 'gemini' },
+      { id: 'opencode-row', source: 'opencode' },
+      { id: 'pi-row', source: 'pi' },
+    ]);
+    migratedDb.close();
+  });
+
   it('handles existing last_indexed column gracefully', () => {
     // Create database with migration already applied
     const db = initDatabase();

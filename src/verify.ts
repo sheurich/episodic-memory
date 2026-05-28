@@ -3,7 +3,7 @@ import path from 'path';
 import { parseConversation } from './parser.js';
 import { initDatabase, getAllExchanges, getFileLastIndexed } from './db.js';
 import { getArchiveDir, getExcludedProjects, findJsonlFiles } from './paths.js';
-import { isErroredSentinel } from './summary-sentinel.js';
+import { formatErrorSentinel, isErroredSentinel } from './summary-sentinel.js';
 
 export interface VerificationResult {
   missing: Array<{ path: string; reason: string }>;
@@ -158,11 +158,17 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
         continue;
       }
 
-      // Generate/update summary
+      // Generate/update summary. A summarizer failure should not prevent
+      // repair from refreshing the searchable index.
       const summaryPath = conversationPath.replace('.jsonl', '-summary.txt');
-      const summary = await summarizeConversation(exchanges);
-      fs.writeFileSync(summaryPath, summary, 'utf-8');
-      console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
+      try {
+        const summary = await summarizeConversation(exchanges);
+        fs.writeFileSync(summaryPath, summary, 'utf-8');
+        console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
+      } catch (error) {
+        fs.writeFileSync(summaryPath, formatErrorSentinel(error), 'utf-8');
+        console.error('  Failed to summarize %s:', conversationPath, error);
+      }
 
       // Index exchanges
       for (const exchange of exchanges) {
@@ -177,7 +183,7 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
 
       console.log(`  Indexed ${exchanges.length} exchanges`);
     } catch (error) {
-      console.error(`Failed to re-index ${conversationPath}:`, error);
+      console.error('Failed to re-index %s:', conversationPath, error);
     }
   }
 

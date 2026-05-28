@@ -1,10 +1,45 @@
 import Database from 'better-sqlite3';
-import { ConversationExchange } from './types.js';
+import { ConversationExchange, type AgentSource } from './types.js';
 import path from 'path';
 import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
 import { getDbPath } from './paths.js';
 import { EMBEDDING_VERSION } from './embedding-migration.js';
+
+function sourceFromArchivePath(archivePath: string): AgentSource | undefined {
+  const parts = archivePath.split(/[\\/]+/);
+  const archiveIndex = parts.lastIndexOf('conversation-archive');
+  if (archiveIndex === -1) return undefined;
+
+  const source = parts[archiveIndex + 1] as AgentSource | undefined;
+  if (!source || !['gemini', 'pi', 'opencode'].includes(source)) {
+    return undefined;
+  }
+
+  // Multi-source archives are stored as <archive>/<source>/<project>/<file>.
+  // Legacy Claude archives are <archive>/<project>/<file>; do not rewrite a
+  // Claude project named "pi", "gemini", or "opencode".
+  if (archiveIndex + 3 >= parts.length) return undefined;
+
+  return source;
+}
+
+function backfillSourceFromArchivePath(db: Database.Database): void {
+  const rows = db.prepare(`
+    SELECT id, archive_path AS archivePath, source
+    FROM exchanges
+    WHERE source IS NULL OR source = 'claude'
+  `).all() as Array<{ id: string; archivePath: string; source: string | null }>;
+
+  const update = db.prepare(`UPDATE exchanges SET source = ? WHERE id = ?`);
+  const tx = db.transaction(() => {
+    for (const row of rows) {
+      const source = sourceFromArchivePath(row.archivePath);
+      if (source) update.run(source, row.id);
+    }
+  });
+  tx();
+}
 
 export function migrateSchema(db: Database.Database): void {
   const columns = db.prepare(`SELECT name FROM pragma_table_info('exchanges')`).all() as Array<{ name: string }>;
@@ -19,6 +54,7 @@ export function migrateSchema(db: Database.Database): void {
     { name: 'cwd', sql: 'ALTER TABLE exchanges ADD COLUMN cwd TEXT' },
     { name: 'git_branch', sql: 'ALTER TABLE exchanges ADD COLUMN git_branch TEXT' },
     { name: 'claude_version', sql: 'ALTER TABLE exchanges ADD COLUMN claude_version TEXT' },
+    { name: 'source', sql: "ALTER TABLE exchanges ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'" },
     { name: 'agent_version', sql: 'ALTER TABLE exchanges ADD COLUMN agent_version TEXT' },
     { name: 'model', sql: 'ALTER TABLE exchanges ADD COLUMN model TEXT' },
     { name: 'model_provider', sql: 'ALTER TABLE exchanges ADD COLUMN model_provider TEXT' },
@@ -41,6 +77,7 @@ export function migrateSchema(db: Database.Database): void {
     console.log('Migration complete.');
   }
 
+  backfillSourceFromArchivePath(db);
   migrateToolCallsCascade(db);
 }
 
@@ -141,6 +178,7 @@ export function initDatabase(): Database.Database {
       cwd TEXT,
       git_branch TEXT,
       claude_version TEXT,
+      source TEXT NOT NULL DEFAULT 'claude',
       agent_version TEXT,
       model TEXT,
       model_provider TEXT,
@@ -199,6 +237,9 @@ export function initDatabase(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_git_branch ON exchanges(git_branch)
   `);
   db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_source ON exchanges(source)
+  `);
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_tool_name ON tool_calls(tool_name)
   `);
   db.exec(`
@@ -219,9 +260,9 @@ export function insertExchange(
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO exchanges
     (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end, last_indexed,
-     parent_uuid, is_sidechain, harness, session_id, cwd, git_branch, claude_version, agent_version, model, model_provider,
+     parent_uuid, is_sidechain, harness, session_id, cwd, git_branch, claude_version, source, agent_version, model, model_provider,
      thinking_level, thinking_disabled, thinking_triggers, embedding_version)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   stmt.run(
@@ -241,9 +282,10 @@ export function insertExchange(
     exchange.cwd || null,
     exchange.gitBranch || null,
     exchange.claudeVersion || null,
+    exchange.source || 'claude',
     exchange.agentVersion || exchange.claudeVersion || null,
     exchange.model || null,
-    exchange.modelProvider || null,
+    exchange.modelProvider || exchange.provider || null,
     exchange.thinkingLevel || null,
     exchange.thinkingDisabled ? 1 : 0,
     exchange.thinkingTriggers || null,

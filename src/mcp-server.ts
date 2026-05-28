@@ -28,22 +28,25 @@ import fs from 'fs';
 
 const SearchModeEnum = z.enum(['vector', 'text', 'both']);
 const ResponseFormatEnum = z.enum(['markdown', 'json']);
+const OptionalDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
+  .nullish()
+  .transform((value) => value ?? undefined);
+const OptionalStringSchema = z
+  .string()
+  .min(1)
+  .nullish()
+  .transform((value) => value ?? undefined);
 
 const SearchInputSchema = z
   .object({
     query: z
-      .union([
-        z.string().min(2, 'Query must be at least 2 characters'),
-        z
-          .array(z.string().min(2))
-          .min(2, 'Must provide at least 2 concepts for multi-concept search')
-          .max(5, 'Cannot search more than 5 concepts at once'),
-      ])
-      .describe(
-        'Search query - string for single concept, array of strings for multi-concept AND search'
-      ),
+      .string()
+      .min(2, 'Query must be at least 2 characters')
+      .describe('Search query for semantic and/or text search'),
     mode: SearchModeEnum.default('both').describe(
-      'Search mode: "vector" for semantic similarity, "text" for exact matching, "both" for combined (default: "both"). Only used for single-concept searches.'
+      'Search mode: "vector" for semantic similarity, "text" for exact matching, "both" for combined (default: "both").'
     ),
     limit: z
       .number()
@@ -52,31 +55,36 @@ const SearchInputSchema = z
       .max(50)
       .default(10)
       .describe('Maximum number of results to return (default: 10)'),
-    after: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
-      .optional()
-      .describe('Only return conversations after this date (YYYY-MM-DD format)'),
-    before: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
-      .optional()
-      .describe('Only return conversations before this date (YYYY-MM-DD format)'),
-    project: z
-      .string()
+    after: OptionalDateSchema.describe('Only return conversations after this date (YYYY-MM-DD format)'),
+    before: OptionalDateSchema.describe('Only return conversations before this date (YYYY-MM-DD format)'),
+    project: OptionalStringSchema.describe('Filter by project name (exact match)'),
+    session_id: OptionalStringSchema.describe('Filter by session ID (exact match)'),
+    git_branch: OptionalStringSchema.describe('Filter by git branch name (exact match)'),
+    response_format: ResponseFormatEnum.default('markdown').describe(
+      'Output format: "markdown" for human-readable or "json" for machine-readable (default: "markdown")'
+    ),
+  })
+  .strict();
+
+const SearchMultiInputSchema = z
+  .object({
+    concepts: z
+      .array(z.string().min(2))
+      .min(2, 'Must provide at least 2 concepts for multi-concept search')
+      .max(5, 'Cannot search more than 5 concepts at once')
+      .describe('Concepts for multi-concept AND search'),
+    limit: z
+      .number()
+      .int()
       .min(1)
-      .optional()
-      .describe('Filter by project name (exact match)'),
-    session_id: z
-      .string()
-      .min(1)
-      .optional()
-      .describe('Filter by session ID (exact match)'),
-    git_branch: z
-      .string()
-      .min(1)
-      .optional()
-      .describe('Filter by git branch name (exact match)'),
+      .max(50)
+      .default(10)
+      .describe('Maximum number of results to return (default: 10)'),
+    after: OptionalDateSchema.describe('Only return conversations after this date (YYYY-MM-DD format)'),
+    before: OptionalDateSchema.describe('Only return conversations before this date (YYYY-MM-DD format)'),
+    project: OptionalStringSchema.describe('Filter by project name (exact match)'),
+    session_id: OptionalStringSchema.describe('Filter by session ID (exact match)'),
+    git_branch: OptionalStringSchema.describe('Filter by git branch name (exact match)'),
     response_format: ResponseFormatEnum.default('markdown').describe(
       'Output format: "markdown" for human-readable or "json" for machine-readable (default: "markdown")'
     ),
@@ -84,6 +92,7 @@ const SearchInputSchema = z
   .strict();
 
 type SearchInput = z.infer<typeof SearchInputSchema>;
+type SearchMultiInput = z.infer<typeof SearchMultiInputSchema>;
 
 const ShowConversationInputSchema = z
   .object({
@@ -107,6 +116,21 @@ const ShowConversationInputSchema = z
   .strict();
 
 type ShowConversationInput = z.infer<typeof ShowConversationInputSchema>;
+
+const OptionalDateInputJsonSchema = {
+  oneOf: [
+    { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+    { type: 'null' },
+  ],
+};
+
+const optionalStringInputJsonSchema = (description: string) => ({
+  oneOf: [
+    { type: 'string', minLength: 1 },
+    { type: 'null' },
+  ],
+  description,
+});
 
 // Error Handling Utility
 
@@ -138,23 +162,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: 'search',
-        description: `Gives you memory across sessions. You don't automatically remember past Claude Code and Codex conversations - this tool restores context by searching them. Use BEFORE every task to recover decisions, solutions, and avoid reinventing work. Single string for semantic search or array of 2-5 concepts for precise AND matching. Returns ranked results with project, date, snippets, and file paths.`,
+        description: `Gives you memory across sessions. You don't automatically remember past Claude Code and Codex conversations - this tool restores context by searching them. Use BEFORE every task to recover decisions, solutions, and avoid reinventing work. Returns ranked results with project, date, snippets, and file paths.`,
         inputSchema: {
           type: 'object',
           properties: {
-            query: {
-              oneOf: [
-                { type: 'string', minLength: 2 },
-                { type: 'array', items: { type: 'string', minLength: 2 }, minItems: 2, maxItems: 5 },
-              ],
-            },
+            query: { type: 'string', minLength: 2 },
             mode: { type: 'string', enum: ['vector', 'text', 'both'], default: 'both' },
             limit: { type: 'number', minimum: 1, maximum: 50, default: 10 },
-            after: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
-            before: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
-            project: { type: 'string', minLength: 1, description: 'Filter by project name (exact match)' },
-            session_id: { type: 'string', minLength: 1, description: 'Filter by session ID (exact match)' },
-            git_branch: { type: 'string', minLength: 1, description: 'Filter by git branch name (exact match)' },
+            after: OptionalDateInputJsonSchema,
+            before: OptionalDateInputJsonSchema,
+            project: optionalStringInputJsonSchema('Filter by project name (exact match)'),
+            session_id: optionalStringInputJsonSchema('Filter by session ID (exact match)'),
+            git_branch: optionalStringInputJsonSchema('Filter by git branch name (exact match)'),
             response_format: { type: 'string', enum: ['markdown', 'json'], default: 'markdown' },
           },
           required: ['query'],
@@ -162,6 +181,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
         annotations: {
           title: 'Search Episodic Memory',
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      {
+        name: 'search_multi',
+        description: `Search for memories that match multiple concepts at once. Use when one concept is too broad and you need precise AND matching across 2-5 concepts. Returns ranked results with project, date, snippets, and file paths.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            concepts: { type: 'array', items: { type: 'string', minLength: 2 }, minItems: 2, maxItems: 5 },
+            limit: { type: 'number', minimum: 1, maximum: 50, default: 10 },
+            after: OptionalDateInputJsonSchema,
+            before: OptionalDateInputJsonSchema,
+            project: optionalStringInputJsonSchema('Filter by project name (exact match)'),
+            session_id: optionalStringInputJsonSchema('Filter by session ID (exact match)'),
+            git_branch: optionalStringInputJsonSchema('Filter by git branch name (exact match)'),
+            response_format: { type: 'string', enum: ['markdown', 'json'], default: 'markdown' },
+          },
+          required: ['concepts'],
+          additionalProperties: false,
+        },
+        annotations: {
+          title: 'Search Episodic Memory by Multiple Concepts',
           readOnlyHint: true,
           destructiveHint: false,
           idempotentHint: true,
@@ -201,51 +246,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     if (name === 'search') {
       const params = SearchInputSchema.parse(args);
-      let resultText: string;
+      const options: SearchOptions = {
+        mode: params.mode,
+        limit: params.limit,
+        after: params.after,
+        before: params.before,
+        project: params.project,
+        session_id: params.session_id,
+        git_branch: params.git_branch,
+      };
 
-      // Check if query is array (multi-concept) or string (single-concept)
-      if (Array.isArray(params.query)) {
-        // Multi-concept search
-        const options = {
-          limit: params.limit,
-          after: params.after,
-          before: params.before,
-          project: params.project,
-          session_id: params.session_id,
-          git_branch: params.git_branch,
-        };
-
-        const results = await searchMultipleConcepts(params.query, options);
-
-        if (params.response_format === 'json') {
-          resultText = JSON.stringify(
-            {
-              results: results,
-              count: results.length,
-              concepts: params.query,
-            },
-            null,
-            2
-          );
-        } else {
-          resultText = await formatMultiConceptResults(results, params.query);
-        }
-      } else {
-        // Single-concept search
-        const options: SearchOptions = {
-          mode: params.mode,
-          limit: params.limit,
-          after: params.after,
-          before: params.before,
-          project: params.project,
-          session_id: params.session_id,
-          git_branch: params.git_branch,
-        };
-
-        const results = await searchConversations(params.query, options);
-
-        if (params.response_format === 'json') {
-          resultText = JSON.stringify(
+      const results = await searchConversations(params.query, options);
+      const resultText = params.response_format === 'json'
+        ? JSON.stringify(
             {
               results: results.map((r) => ({
                 exchange: r.exchange,
@@ -257,11 +270,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             },
             null,
             2
-          );
-        } else {
-          resultText = await formatResults(results);
-        }
-      }
+          )
+        : await formatResults(results);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: resultText,
+          },
+        ],
+      };
+    }
+
+    if (name === 'search_multi') {
+      const params: SearchMultiInput = SearchMultiInputSchema.parse(args);
+      const options = {
+        limit: params.limit,
+        after: params.after,
+        before: params.before,
+        project: params.project,
+        session_id: params.session_id,
+        git_branch: params.git_branch,
+      };
+
+      const results = await searchMultipleConcepts(params.concepts, options);
+      const resultText = params.response_format === 'json'
+        ? JSON.stringify(
+            {
+              results,
+              count: results.length,
+              concepts: params.concepts,
+            },
+            null,
+            2
+          )
+        : await formatMultiConceptResults(results, params.concepts);
 
       return {
         content: [
