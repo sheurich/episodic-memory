@@ -167,6 +167,77 @@ function codexJsonlWithLocalShellOutput(): string {
   ].map(line => JSON.stringify(line)).join('\n');
 }
 
+function piJsonl(): string {
+  return [
+    {
+      type: 'session',
+      version: 3,
+      id: 'pi-session-1',
+      timestamp: '2026-05-12T18:00:00.000Z',
+      cwd: '/Users/agent/example-project',
+    },
+    {
+      type: 'thinking_level_change',
+      id: 'tlc-1',
+      parentId: null,
+      timestamp: '2026-05-12T18:00:00.100Z',
+      thinkingLevel: 'high',
+    },
+    {
+      type: 'message',
+      id: 'msg-user-1',
+      parentId: null,
+      timestamp: '2026-05-12T18:00:01.000Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'Please inspect the config loader.' }],
+      },
+    },
+    {
+      type: 'message',
+      id: 'msg-assistant-1',
+      parentId: 'msg-user-1',
+      timestamp: '2026-05-12T18:00:02.000Z',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'I should read the config file first.' },
+          { type: 'text', text: "I'll take a look." },
+          {
+            type: 'toolCall',
+            id: 'call_config',
+            name: 'read',
+            arguments: { path: 'src/config.ts' },
+          },
+        ],
+      },
+    },
+    {
+      type: 'message',
+      id: 'msg-result-1',
+      parentId: 'msg-assistant-1',
+      timestamp: '2026-05-12T18:00:03.000Z',
+      message: {
+        role: 'toolResult',
+        toolCallId: 'call_config',
+        toolName: 'read',
+        isError: false,
+        content: [{ type: 'text', text: 'export function loadConfig() {}' }],
+      },
+    },
+    {
+      type: 'message',
+      id: 'msg-assistant-2',
+      parentId: 'msg-result-1',
+      timestamp: '2026-05-12T18:00:04.000Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'The config loader reads the default profile first.' }],
+      },
+    },
+  ].map(line => JSON.stringify(line)).join('\n');
+}
+
 describe('show command - markdown formatting', () => {
   const fixturesDir = join(import.meta.dirname, 'fixtures');
 
@@ -269,6 +340,38 @@ describe('show command - markdown formatting', () => {
     expect(markdown).toContain('Exit code: 0');
     expect(markdown).toContain('local shell');
   });
+
+  it('should format pi session JSONL', () => {
+    const markdown = formatConversationAsMarkdown(piJsonl());
+
+    expect(markdown).toContain('**Harness:** Pi');
+    expect(markdown).toContain('pi-session-1');
+    expect(markdown).toContain('/Users/agent/example-project');
+    expect(markdown).toContain('Please inspect the config loader.');
+    expect(markdown).toContain('_Thinking:_ I should read the config file first.');
+    expect(markdown).toContain('**Tool Use:** `read`');
+    expect(markdown).toContain('**Result:**');
+    expect(markdown).toContain('export function loadConfig() {}');
+    expect(markdown).toContain('The config loader reads the default profile first.');
+  });
+
+  it('should return empty string for a pi session with no renderable messages', () => {
+    const jsonl = [
+      { type: 'session', version: 3, id: 'empty-session', timestamp: '2026-05-12T18:00:00.000Z', cwd: '/tmp' },
+    ].map(line => JSON.stringify(line)).join('\n');
+
+    expect(formatConversationAsMarkdown(jsonl)).toBe('');
+  });
+
+  it('should still slice pi session JSONL by line range after the leading session line', () => {
+    const lines = piJsonl().split('\n');
+    // Skip the leading `session` line; detection must still recognize the
+    // remaining `message`-shaped lines.
+    const markdown = formatConversationAsMarkdown(lines.slice(2).join('\n'));
+
+    expect(markdown).toContain('**Harness:** Pi');
+    expect(markdown).toContain('Please inspect the config loader.');
+  });
 });
 
 describe('show command - HTML formatting', () => {
@@ -349,5 +452,16 @@ describe('show command - HTML formatting', () => {
     expect(html).toContain('&lt;script&gt;alert(');
     expect(html).toContain('&lt;/script&gt;');
     expect(html).toContain('&lt;b&gt;literal markup&lt;/b&gt;');
+  });
+
+  it('should format pi session JSONL as HTML', () => {
+    const html = formatConversationAsHTML(piJsonl());
+
+    expect(html).toContain('<!DOCTYPE html>');
+    expect(html).toContain('Pi');
+    expect(html).toContain('Please inspect the config loader.');
+    expect(html).toContain('Tool Use');
+    expect(html).toContain('read');
+    expect(html).toContain('The config loader reads the default profile first.');
   });
 });

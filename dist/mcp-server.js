@@ -3837,7 +3837,7 @@ var require_fast_uri = __commonJS({
         if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport)) {
           if (parsed.host && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP === false && nonSimpleDomain(parsed.host)) {
             try {
-              parsed.host = URL.domainToASCII(parsed.host.toLowerCase());
+              parsed.host = new URL("http://" + parsed.host).hostname;
             } catch (e) {
               parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e;
             }
@@ -26485,6 +26485,9 @@ function formatConversationAsMarkdown(jsonl, startLine, endLine) {
   if (isCodexRollout(lines)) {
     return formatCodexConversationAsMarkdown(lines);
   }
+  if (isPiSession(lines)) {
+    return formatPiConversationAsMarkdown(lines);
+  }
   const allMessages = lines.map((line) => JSON.parse(line));
   const messages = allMessages.filter((msg) => {
     if (msg.type !== "user" && msg.type !== "assistant") return false;
@@ -26691,6 +26694,132 @@ function isCodexRollout(lines) {
   }
   return false;
 }
+function isPiSession(lines) {
+  for (const line of lines) {
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object") continue;
+    if (parsed.type === "session" && typeof parsed.version === "number" && "cwd" in parsed) {
+      return true;
+    }
+    if (parsed.type === "message" && parsed.message && typeof parsed.message === "object" && "parentId" in parsed && ["user", "assistant", "toolResult", "bashExecution"].includes(parsed.message.role)) {
+      return true;
+    }
+  }
+  return false;
+}
+function extractPiText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((block) => {
+    if (block.type === "text" && typeof block.text === "string") return block.text;
+    if (block.type === "image") return "[image]";
+    return "";
+  }).filter(Boolean).join("\n");
+}
+function formatPiToolResultMarkdown(text, isError) {
+  let output = isError ? "**Result (error):**\n" : "**Result:**\n";
+  output += text.includes("\n") || text.length > 100 ? `\`\`\`
+${text}
+\`\`\`
+
+` : `${text}
+
+`;
+  return output;
+}
+function formatPiConversationAsMarkdown(lines) {
+  const entries = lines.map((line) => JSON.parse(line));
+  const sessionEntry = entries.find((e) => e.type === "session");
+  const messageEntries = entries.filter(
+    (e) => e.type === "message" && !!e.message
+  );
+  const toolResults = /* @__PURE__ */ new Map();
+  for (const entry of messageEntries) {
+    if (entry.message.role === "toolResult" && entry.message.toolCallId) {
+      toolResults.set(entry.message.toolCallId, {
+        text: extractPiText(entry.message.content),
+        isError: entry.message.isError
+      });
+    }
+  }
+  const renderable = messageEntries.filter((e) => e.message.role !== "toolResult");
+  if (renderable.length === 0) {
+    return "";
+  }
+  let output = "# Conversation\n\n";
+  output += "## Metadata\n\n";
+  output += "**Harness:** Pi\n\n";
+  if (sessionEntry?.id) output += `**Session ID:** ${sessionEntry.id}
+
+`;
+  if (sessionEntry?.cwd) output += `**Working Directory:** ${sessionEntry.cwd}
+
+`;
+  if (sessionEntry?.parentSession) output += `**Parent Session:** ${sessionEntry.parentSession}
+
+`;
+  output += "---\n\n";
+  output += "## Messages\n\n";
+  for (let i = 0; i < renderable.length; i++) {
+    const entry = renderable[i];
+    const msg = entry.message;
+    const timestamp = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : "";
+    const anchor = entry.id || `msg-${i}`;
+    if (msg.role === "bashExecution") {
+      output += `### **Tool Use** (${timestamp}) {#${anchor}}
+
+`;
+      output += "**Tool Use:** `bash`\n\n";
+      if (msg.command) {
+        output += `- **command:**
+\`\`\`
+${msg.command}
+\`\`\`
+
+`;
+      }
+      output += formatPiToolResultMarkdown(msg.output || "", typeof msg.exitCode === "number" && msg.exitCode !== 0);
+      continue;
+    }
+    const roleLabel = msg.role === "user" ? "User" : "Agent";
+    output += `### **${roleLabel}** (${timestamp}) {#${anchor}}
+
+`;
+    const content = msg.content;
+    if (typeof content === "string") {
+      output += `${content}
+
+`;
+    } else if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block.type === "text" && block.text) {
+          output += `${block.text}
+
+`;
+        } else if (block.type === "thinking" && block.thinking) {
+          output += `_Thinking:_ ${block.thinking}
+
+`;
+        } else if (block.type === "toolCall") {
+          output += `**Tool Use:** \`${block.name || "unknown"}\`
+
+`;
+          output += formatCodexToolInputMarkdown(block.arguments);
+          const result = block.id ? toolResults.get(block.id) : void 0;
+          if (result) {
+            output += formatPiToolResultMarkdown(result.text, result.isError);
+          }
+        }
+      }
+    }
+  }
+  return output;
+}
 function extractCodexText(content) {
   if (typeof content === "string") {
     return content;
@@ -26865,7 +26994,7 @@ ${result}
 }
 
 // src/version.ts
-var VERSION = "1.4.1";
+var VERSION = "1.4.2";
 
 // src/mcp-server.ts
 import fs4 from "fs";
