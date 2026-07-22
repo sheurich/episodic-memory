@@ -5,7 +5,8 @@ import { initDatabase, insertExchange } from './db.js';
 import { parseConversation } from './parser.js';
 import { initEmbeddings, generateExchangeEmbedding } from './embeddings.js';
 import { summarizeConversation } from './summarizer.js';
-import { ConversationExchange } from './types.js';
+import { ConversationExchange, ConversationSource, AgentSource } from './types.js';
+import { getAllSources } from './parsers/index.js';
 import { getArchiveDir, getExcludedProjects, getConversationSourceDirs, findJsonlFiles } from './paths.js';
 import { formatErrorSentinel, shouldQueueForSummary } from './summary-sentinel.js';
 
@@ -185,6 +186,144 @@ export async function indexConversations(
 
   db.close();
   console.log(`\n✅ Indexing complete! Conversations: ${conversationsProcessed}, Exchanges: ${totalExchanges}`);
+}
+
+/**
+ * Index conversations from all non-Claude sources (Gemini, Pi, OpenCode).
+ *
+ * Claude Code and Codex are covered by indexConversations() / indexUnprocessed()
+ * which use the upstream-maintained getConversationSourceDirs() pipeline with
+ * high-water-mark incremental indexing and summary-sentinel retry.
+ * This function extends coverage to the remaining sources via the
+ * ConversationSource registry.
+ */
+export async function indexAllSources(
+  options: {
+    sources?: AgentSource[];
+    concurrency?: number;
+    noSummaries?: boolean;
+    maxConversations?: number;
+  } = {}
+): Promise<void> {
+  const {
+    sources: requestedSources,
+    concurrency = 1,
+    noSummaries = false,
+    maxConversations,
+  } = options;
+
+  console.log('Initializing database...');
+  const db = initDatabase();
+
+  console.log('Loading embedding model...');
+  await initEmbeddings();
+
+  if (noSummaries) {
+    console.log('⚠️  Running in no-summaries mode (skipping AI summaries)');
+  }
+
+  // Default to non-Claude sources; Claude+Codex are handled by indexConversations().
+  const defaultSources: AgentSource[] = ['gemini', 'pi', 'opencode'];
+  const allSources = getAllSources();
+  const activeSources = requestedSources
+    ? allSources.filter(s => requestedSources.includes(s.name))
+    : allSources.filter(s => defaultSources.includes(s.name));
+
+  let totalExchanges = 0;
+  let totalConversations = 0;
+
+  for (const source of activeSources) {
+    console.log(`\n━━━ Scanning source: ${source.label} ━━━`);
+
+    let conversations: Array<{ project: string; filePath: string }>;
+    try {
+      conversations = await source.discoverConversations();
+    } catch (error) {
+      console.log(`  ⚠️  Discovery failed: ${error}`);
+      continue;
+    }
+
+    if (conversations.length === 0) {
+      console.log('  No conversations found.');
+      continue;
+    }
+
+    console.log(`  Found ${conversations.length} conversation files`);
+
+    const byProject = new Map<string, typeof conversations>();
+    for (const conv of conversations) {
+      const arr = byProject.get(conv.project) || [];
+      arr.push(conv);
+      byProject.set(conv.project, arr);
+    }
+
+    for (const [project, convs] of byProject) {
+      console.log(`\n  [${source.name}] Project: ${project} (${convs.length} files)`);
+
+      const archiveDir = path.join(getArchiveDir(), source.name, project);
+      fs.mkdirSync(archiveDir, { recursive: true });
+
+      for (const conv of convs) {
+        const fileName = path.basename(conv.filePath);
+        const archivePath = path.join(archiveDir, fileName);
+
+        const alreadyIndexed = db.prepare(
+          'SELECT COUNT(*) as count FROM exchanges WHERE archive_path = ?'
+        ).get(archivePath) as { count: number };
+        if (alreadyIndexed.count > 0) continue;
+
+        if (!fs.existsSync(archivePath)) {
+          fs.copyFileSync(conv.filePath, archivePath);
+        }
+
+        let exchanges: ConversationExchange[];
+        try {
+          exchanges = await source.parseConversation(conv.filePath, project, archivePath);
+        } catch (error) {
+          console.log(`    ✗ Parse error ${fileName}: ${error}`);
+          continue;
+        }
+
+        if (exchanges.length === 0) continue;
+
+        if (!noSummaries) {
+          const ext = path.extname(fileName);
+          const summaryPath = path.join(archiveDir, fileName.replace(ext, '-summary.txt'));
+          if (!fs.existsSync(summaryPath)) {
+            try {
+              const summary = await summarizeConversation(exchanges);
+              fs.writeFileSync(summaryPath, summary, 'utf-8');
+            } catch (_err) {
+              // Non-fatal: continue without summary
+            }
+          }
+        }
+
+        for (const exchange of exchanges) {
+          const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
+          const embedding = await generateExchangeEmbedding(
+            exchange.userMessage,
+            exchange.assistantMessage,
+            toolNames
+          );
+          insertExchange(db, exchange, embedding, toolNames);
+        }
+
+        totalExchanges += exchanges.length;
+        totalConversations++;
+
+        if (maxConversations && totalConversations >= maxConversations) {
+          console.log(`\n  Reached limit of ${maxConversations} conversations`);
+          db.close();
+          console.log(`\n✅ Multi-source indexing complete! Sources: ${activeSources.length}, Conversations: ${totalConversations}, Exchanges: ${totalExchanges}`);
+          return;
+        }
+      }
+    }
+  }
+
+  db.close();
+  console.log(`\n✅ Multi-source indexing complete! Sources: ${activeSources.length}, Conversations: ${totalConversations}, Exchanges: ${totalExchanges}`);
 }
 
 export async function indexSession(sessionId: string, concurrency: number = 1, noSummaries: boolean = false): Promise<void> {

@@ -1,6 +1,8 @@
 # Episodic Memory
 
-Semantic search for Claude Code and Codex conversations. Remember past discussions, decisions, and patterns.
+Semantic search for coding agent conversations. Remember past discussions, decisions, and patterns.
+
+Supports **Claude Code**, **Codex**, **Pi**, **Gemini CLI**, and **OpenCode**.
 
 ## Testimonial
 
@@ -43,7 +45,7 @@ _Conversation ID: 216ad284-c782-45a4-b2ce-36775cdb5a6c_
 
 ## Installation
 
-### As a Claude Code plugin (Recommended)
+### Claude Code (Recommended)
 
 The plugin provides MCP server integration, automatic session-end indexing, and seamless access to your conversation history.
 
@@ -56,6 +58,32 @@ The plugin automatically:
 - Indexes conversations at the end of each session
 - Exposes MCP tools for searching and viewing conversations
 - Makes your conversation history searchable via natural language
+
+### Pi
+
+Install as a Pi package:
+
+```bash
+pi install git:github.com/obra/episodic-memory
+```
+
+This auto-discovers and registers:
+- **Extension** — indexes conversations from all sources on session start
+- **Skill** — triggers subagent-based search when historical context is relevant
+- **Agent** — `search-conversations` subagent for context-efficient search
+
+The MCP server must be configured separately in `~/.pi/agent/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "episodic-memory": {
+      "command": "node",
+      "args": ["<path-to-episodic-memory>/dist/mcp-server.js"]
+    }
+  }
+}
+```
 
 ### As a Codex plugin
 
@@ -161,6 +189,12 @@ The plugin automatically syncs and indexes conversations from the harness that s
 - "Error message about sqlite-vec initialization"
 - "Git commit SHA for the routing refactor"
 
+Or reference past work in natural conversation — Claude will search when appropriate.
+
+### In Pi
+
+The extension indexes conversations on session start. The `remembering-conversations` skill triggers automatic search when you reference past work, ask "how should I...", or get stuck on a problem. It dispatches a `search-conversations` subagent to keep your main context window clean.
+
 In Codex, the skill guides the agent to use the episodic-memory MCP search/read tools directly when an agent-dispatch path is not available.
 
 ## API Configuration
@@ -204,7 +238,7 @@ Codex summarization requires `codex-cli 0.130.0` or newer. If Codex app-server s
 
 ### `episodic-memory sync`
 
-**Recommended for plugin hooks.** Copies new conversations from `~/.claude/projects`, `~/.claude/transcripts`, and `~/.codex/sessions` to archive and indexes them.
+**Recommended for plugin hooks.** Copies new conversations from `~/.claude/projects`, `~/.claude/transcripts`, `~/.codex/sessions`, `~/.pi/agent/sessions`, `~/.gemini/tmp`, and `~/.local/share/opencode` to archive and indexes them.
 
 Features:
 - Only copies new or modified files (fast on subsequent runs)
@@ -219,6 +253,16 @@ Add to `.claude/hooks/session-end`:
 #!/bin/bash
 episodic-memory sync
 ```
+
+### `episodic-memory index-all-sources`
+
+Index conversations from all supported agents (Claude Code, Pi, Gemini CLI, OpenCode). Discovers session files from each agent's standard location.
+
+```bash
+episodic-memory index-all-sources [--no-summaries] [--source claude] [--source pi]
+```
+
+The Pi extension runs this automatically on session start.
 
 ### `episodic-memory stats`
 
@@ -292,15 +336,22 @@ open output.html
 ## Architecture
 
 - **Core package** - TypeScript library for indexing and searching conversations
+- **Parsers** - Per-agent session parsers (Claude Code, Pi, Gemini CLI, OpenCode)
 - **CLI tools** - Unified command-line interface for manual use
 - **MCP Server** - Model Context Protocol server exposing search and conversation tools
 - **Claude Code plugin** - Integration with Claude Code (auto-indexing, MCP tools, hooks)
 - **Codex plugin** - Integration with Codex (manifest, MCP config, hooks, skills)
+- **Pi extension** - Session-start indexing, search skill, subagent
 
 ## How It Works
 
-1. **Sync** - Copies conversation files from Claude Code and Codex transcript directories to archive
-2. **Parse** - Extracts user-agent exchanges from Claude Code JSONL or Codex rollout JSONL
+1. **Sync** - Copies conversation files from all supported agent directories to archive
+2. **Parse** - Extracts user-agent exchanges from each format:
+   - Claude Code: `~/.claude/projects` and `~/.claude/transcripts` (JSONL)
+   - Codex: `~/.codex/sessions` (rollout JSONL)
+   - Pi: `~/.pi/agent/sessions` (JSONL)
+   - Gemini CLI: `~/.gemini/tmp` (session JSON)
+   - OpenCode: `~/.local/share/opencode` (SQLite)
 3. **Embed** - Generates vector embeddings using Transformers.js (local, offline)
 4. **Index** - Stores in SQLite with sqlite-vec for fast similarity search
 5. **Search** - Semantic search using vector similarity or exact text matching
@@ -327,7 +378,7 @@ The marker can appear in any message (user or assistant) and excludes the entire
 
 ## MCP Server
 
-When installed as a Claude Code or Codex plugin, episodic-memory provides an MCP (Model Context Protocol) server that exposes tools for searching and viewing conversations.
+When installed as a Claude Code or Codex plugin, episodic-memory provides an MCP (Model Context Protocol) server that exposes tools for searching and viewing conversations. In Pi, configure it via `mcp.json` (see Installation).
 
 ### Available MCP Tools
 
@@ -335,7 +386,7 @@ When installed as a Claude Code or Codex plugin, episodic-memory provides an MCP
 
 Search indexed conversations using semantic similarity or exact text matching.
 
-**Single-concept search**: Pass a string query
+**Single-concept search**: Use the `search` tool with a string query
 ```json
 {
   "query": "React Router authentication",
@@ -344,17 +395,24 @@ Search indexed conversations using semantic similarity or exact text matching.
 }
 ```
 
-**Multi-concept AND search**: Pass an array of concepts
+**Multi-concept AND search**: Use the `search_multi` tool with a `concepts` array
 ```json
 {
-  "query": ["React Router", "authentication", "JWT"],
+  "concepts": ["React Router", "authentication", "JWT"],
   "limit": 10
 }
 ```
 
-**Parameters:**
-- `query` (string | string[]): Single string for regular search, or array of 2-5 strings for multi-concept AND search
+**Parameters for `search`:**
+- `query` (string): Single string for regular search
 - `mode` ('vector' | 'text' | 'both'): Search mode for single-concept searches (default: 'both')
+- `limit` (number): Max results, 1-50 (default: 10)
+- `after` (string, optional): Only show conversations after YYYY-MM-DD
+- `before` (string, optional): Only show conversations before YYYY-MM-DD
+- `response_format` ('markdown' | 'json'): Output format (default: 'markdown')
+
+**Parameters for `search_multi`:**
+- `concepts` (string[]): Array of 2-5 strings for multi-concept AND search
 - `limit` (number): Max results, 1-50 (default: 10)
 - `after` (string, optional): Only show conversations after YYYY-MM-DD
 - `before` (string, optional): Only show conversations before YYYY-MM-DD
@@ -362,20 +420,26 @@ Search indexed conversations using semantic similarity or exact text matching.
 
 #### `read`
 
-Display a full conversation in readable markdown format.
+#### `episodic_memory_read`
+
+Display a full conversation in readable markdown format, with optional line range pagination.
 
 ```json
 {
-  "path": "/path/to/conversation.jsonl"
+  "path": "/path/to/conversation.jsonl",
+  "startLine": 100,
+  "endLine": 200
 }
 ```
 
 **Parameters:**
-- `path` (string): Absolute path to the JSONL conversation file
+- `path` (string): Absolute path to the conversation file
+- `startLine` (number, optional): Starting line (1-indexed)
+- `endLine` (number, optional): Ending line (1-indexed)
 
 ### Using the MCP Server Directly
 
-The MCP server can also be used outside of Claude Code with any MCP-compatible client:
+The MCP server can be used with any MCP-compatible client:
 
 ```bash
 # Run the MCP server (stdio transport)

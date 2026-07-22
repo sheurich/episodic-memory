@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { verifyIndex, repairIndex } from './verify.js';
-import { indexSession, indexUnprocessed, indexConversations } from './indexer.js';
+import { indexSession, indexUnprocessed, indexConversations, indexAllSources } from './indexer.js';
 import { initDatabase } from './db.js';
 import { getDbPath, getArchiveDir } from './paths.js';
+import { AgentSource } from './types.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -21,6 +22,19 @@ function getConcurrency(): number {
 // Parse --no-summaries flag
 function getNoSummaries(): boolean {
   return process.argv.includes('--no-summaries');
+}
+
+// Parse --source flag (can be repeated: --source claude --source pi)
+function getSources(): AgentSource[] | undefined {
+  const sources: AgentSource[] = [];
+  const validSources = new Set<AgentSource>(['claude', 'gemini', 'pi', 'opencode']);
+  for (let i = 0; i < process.argv.length; i++) {
+    if (process.argv[i] === '--source' && process.argv[i + 1]) {
+      const s = process.argv[i + 1] as AgentSource;
+      if (validSources.has(s)) sources.push(s);
+    }
+  }
+  return sources.length > 0 ? sources : undefined;
 }
 
 const concurrency = getConcurrency();
@@ -109,7 +123,19 @@ async function main() {
 
       case 'index-all':
       default:
-        await indexConversations(undefined, undefined, concurrency, noSummaries);
+        if (command === 'index-all-sources' || getSources()) {
+          // Claude+Codex via the upstream-maintained pipeline
+          await indexConversations(undefined, undefined, concurrency, noSummaries);
+          // Gemini, Pi, OpenCode via the ConversationSource registry
+          await indexAllSources({
+            sources: getSources(),
+            concurrency,
+            noSummaries,
+          });
+        } else {
+          // Default: Claude+Codex only
+          await indexConversations(undefined, undefined, concurrency, noSummaries);
+        }
         break;
     }
   } catch (error) {

@@ -3765,6 +3765,7 @@ var require_fast_uri = __commonJS({
       return uriTokens.join("");
     }
     var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
+    var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
     function getParseError(parsed, matches) {
       if (matches[2] !== void 0 && parsed.path && parsed.path[0] !== "/") {
         return 'URI path must start with "/" when authority is present.';
@@ -3793,6 +3794,11 @@ var require_fast_uri = __commonJS({
         } else {
           uri = "//" + uri;
         }
+      }
+      const authorityMatch = uri.match(AUTHORITY_PREFIX);
+      if (authorityMatch !== null && authorityMatch[1].indexOf("\\") !== -1) {
+        parsed.error = "URI authority must not contain a literal backslash.";
+        malformedAuthorityOrPort = true;
       }
       const matches = uri.match(URI_PARSE);
       if (matches) {
@@ -24802,6 +24808,32 @@ import * as lockfile from "proper-lockfile";
 var DEFAULT_STALE_MS = 10 * 60 * 1e3;
 
 // src/db.ts
+function sourceFromArchivePath(archivePath) {
+  const parts = archivePath.split(/[\\/]+/);
+  const archiveIndex = parts.lastIndexOf("conversation-archive");
+  if (archiveIndex === -1) return void 0;
+  const source = parts[archiveIndex + 1];
+  if (!source || !["gemini", "pi", "opencode"].includes(source)) {
+    return void 0;
+  }
+  if (archiveIndex + 3 >= parts.length) return void 0;
+  return source;
+}
+function backfillSourceFromArchivePath(db) {
+  const rows = db.prepare(`
+    SELECT id, archive_path AS archivePath, source
+    FROM exchanges
+    WHERE source IS NULL OR source = 'claude'
+  `).all();
+  const update = db.prepare(`UPDATE exchanges SET source = ? WHERE id = ?`);
+  const tx = db.transaction(() => {
+    for (const row of rows) {
+      const source = sourceFromArchivePath(row.archivePath);
+      if (source) update.run(source, row.id);
+    }
+  });
+  tx();
+}
 function migrateSchema(db) {
   const columns = db.prepare(`SELECT name FROM pragma_table_info('exchanges')`).all();
   const columnNames = new Set(columns.map((c) => c.name));
@@ -24814,6 +24846,7 @@ function migrateSchema(db) {
     { name: "cwd", sql: "ALTER TABLE exchanges ADD COLUMN cwd TEXT" },
     { name: "git_branch", sql: "ALTER TABLE exchanges ADD COLUMN git_branch TEXT" },
     { name: "claude_version", sql: "ALTER TABLE exchanges ADD COLUMN claude_version TEXT" },
+    { name: "source", sql: "ALTER TABLE exchanges ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'" },
     { name: "agent_version", sql: "ALTER TABLE exchanges ADD COLUMN agent_version TEXT" },
     { name: "model", sql: "ALTER TABLE exchanges ADD COLUMN model TEXT" },
     { name: "model_provider", sql: "ALTER TABLE exchanges ADD COLUMN model_provider TEXT" },
@@ -24833,6 +24866,7 @@ function migrateSchema(db) {
   if (migrated) {
     console.log("Migration complete.");
   }
+  backfillSourceFromArchivePath(db);
   migrateToolCallsCascade(db);
 }
 function migrateToolCallsCascade(db) {
@@ -24904,6 +24938,7 @@ function initDatabase() {
       cwd TEXT,
       git_branch TEXT,
       claude_version TEXT,
+      source TEXT NOT NULL DEFAULT 'claude',
       agent_version TEXT,
       model TEXT,
       model_provider TEXT,
@@ -24949,6 +24984,9 @@ function initDatabase() {
   `);
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_git_branch ON exchanges(git_branch)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_source ON exchanges(source)
   `);
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_tool_name ON tool_calls(tool_name)
@@ -25049,6 +25087,7 @@ var EXCHANGE_SELECT_COLUMNS = `
         e.archive_path,
         e.line_start,
         e.line_end,
+        e.source,
         e.parent_uuid,
         e.is_sidechain,
         e.harness,
@@ -25072,6 +25111,7 @@ function exchangeFromRow(row) {
     archivePath: row.archive_path,
     lineStart: row.line_start,
     lineEnd: row.line_end,
+    source: row.source || "claude",
     parentUuid: row.parent_uuid || void 0,
     isSidechain: Boolean(row.is_sidechain),
     harness: row.harness,
@@ -25082,6 +25122,7 @@ function exchangeFromRow(row) {
     agentVersion: row.agent_version || void 0,
     model: row.model || void 0,
     modelProvider: row.model_provider || void 0,
+    provider: row.model_provider || void 0,
     thinkingLevel: row.thinking_level || void 0,
     thinkingDisabled: row.thinking_disabled === null ? void 0 : Boolean(row.thinking_disabled),
     thinkingTriggers: row.thinking_triggers || void 0
@@ -27000,22 +27041,31 @@ var VERSION = "1.4.2";
 import fs4 from "fs";
 var SearchModeEnum = external_exports.enum(["vector", "text", "both"]);
 var ResponseFormatEnum = external_exports.enum(["markdown", "json"]);
+var OptionalDateSchema = external_exports.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format").nullish().transform((value) => value ?? void 0);
+var OptionalStringSchema = external_exports.string().min(1).nullish().transform((value) => value ?? void 0);
 var SearchInputSchema = external_exports.object({
-  query: external_exports.union([
-    external_exports.string().min(2, "Query must be at least 2 characters"),
-    external_exports.array(external_exports.string().min(2)).min(2, "Must provide at least 2 concepts for multi-concept search").max(5, "Cannot search more than 5 concepts at once")
-  ]).describe(
-    "Search query - string for single concept, array of strings for multi-concept AND search"
-  ),
+  query: external_exports.string().min(2, "Query must be at least 2 characters").describe("Search query for semantic and/or text search"),
   mode: SearchModeEnum.default("both").describe(
-    'Search mode: "vector" for semantic similarity, "text" for exact matching, "both" for combined (default: "both"). Only used for single-concept searches.'
+    'Search mode: "vector" for semantic similarity, "text" for exact matching, "both" for combined (default: "both").'
   ),
   limit: external_exports.number().int().min(1).max(50).default(10).describe("Maximum number of results to return (default: 10)"),
-  after: external_exports.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format").optional().describe("Only return conversations after this date (YYYY-MM-DD format)"),
-  before: external_exports.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format").optional().describe("Only return conversations before this date (YYYY-MM-DD format)"),
-  project: external_exports.string().min(1).optional().describe("Filter by project name (exact match)"),
-  session_id: external_exports.string().min(1).optional().describe("Filter by session ID (exact match)"),
-  git_branch: external_exports.string().min(1).optional().describe("Filter by git branch name (exact match)"),
+  after: OptionalDateSchema.describe("Only return conversations after this date (YYYY-MM-DD format)"),
+  before: OptionalDateSchema.describe("Only return conversations before this date (YYYY-MM-DD format)"),
+  project: OptionalStringSchema.describe("Filter by project name (exact match)"),
+  session_id: OptionalStringSchema.describe("Filter by session ID (exact match)"),
+  git_branch: OptionalStringSchema.describe("Filter by git branch name (exact match)"),
+  response_format: ResponseFormatEnum.default("markdown").describe(
+    'Output format: "markdown" for human-readable or "json" for machine-readable (default: "markdown")'
+  )
+}).strict();
+var SearchMultiInputSchema = external_exports.object({
+  concepts: external_exports.array(external_exports.string().min(2)).min(2, "Must provide at least 2 concepts for multi-concept search").max(5, "Cannot search more than 5 concepts at once").describe("Concepts for multi-concept AND search"),
+  limit: external_exports.number().int().min(1).max(50).default(10).describe("Maximum number of results to return (default: 10)"),
+  after: OptionalDateSchema.describe("Only return conversations after this date (YYYY-MM-DD format)"),
+  before: OptionalDateSchema.describe("Only return conversations before this date (YYYY-MM-DD format)"),
+  project: OptionalStringSchema.describe("Filter by project name (exact match)"),
+  session_id: OptionalStringSchema.describe("Filter by session ID (exact match)"),
+  git_branch: OptionalStringSchema.describe("Filter by git branch name (exact match)"),
   response_format: ResponseFormatEnum.default("markdown").describe(
     'Output format: "markdown" for human-readable or "json" for machine-readable (default: "markdown")'
   )
@@ -27025,6 +27075,19 @@ var ShowConversationInputSchema = external_exports.object({
   startLine: external_exports.number().int().min(1).optional().describe("Starting line number (1-indexed, inclusive). Omit to start from beginning."),
   endLine: external_exports.number().int().min(1).optional().describe("Ending line number (1-indexed, inclusive). Omit to read to end.")
 }).strict();
+var OptionalDateInputJsonSchema = {
+  oneOf: [
+    { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+    { type: "null" }
+  ]
+};
+var optionalStringInputJsonSchema = (description) => ({
+  oneOf: [
+    { type: "string", minLength: 1 },
+    { type: "null" }
+  ],
+  description
+});
 function handleError(error51) {
   if (error51 instanceof Error) {
     return `Error: ${error51.message}`;
@@ -27047,23 +27110,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: "search",
-        description: `Gives you memory across sessions. You don't automatically remember past Claude Code and Codex conversations - this tool restores context by searching them. Use BEFORE every task to recover decisions, solutions, and avoid reinventing work. Single string for semantic search or array of 2-5 concepts for precise AND matching. Returns ranked results with project, date, snippets, and file paths.`,
+        description: `Gives you memory across sessions. You don't automatically remember past Claude Code and Codex conversations - this tool restores context by searching them. Use BEFORE every task to recover decisions, solutions, and avoid reinventing work. Returns ranked results with project, date, snippets, and file paths.`,
         inputSchema: {
           type: "object",
           properties: {
-            query: {
-              oneOf: [
-                { type: "string", minLength: 2 },
-                { type: "array", items: { type: "string", minLength: 2 }, minItems: 2, maxItems: 5 }
-              ]
-            },
+            query: { type: "string", minLength: 2 },
             mode: { type: "string", enum: ["vector", "text", "both"], default: "both" },
             limit: { type: "number", minimum: 1, maximum: 50, default: 10 },
-            after: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
-            before: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
-            project: { type: "string", minLength: 1, description: "Filter by project name (exact match)" },
-            session_id: { type: "string", minLength: 1, description: "Filter by session ID (exact match)" },
-            git_branch: { type: "string", minLength: 1, description: "Filter by git branch name (exact match)" },
+            after: OptionalDateInputJsonSchema,
+            before: OptionalDateInputJsonSchema,
+            project: optionalStringInputJsonSchema("Filter by project name (exact match)"),
+            session_id: optionalStringInputJsonSchema("Filter by session ID (exact match)"),
+            git_branch: optionalStringInputJsonSchema("Filter by git branch name (exact match)"),
             response_format: { type: "string", enum: ["markdown", "json"], default: "markdown" }
           },
           required: ["query"],
@@ -27071,6 +27129,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
         annotations: {
           title: "Search Episodic Memory",
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      {
+        name: "search_multi",
+        description: `Search for memories that match multiple concepts at once. Use when one concept is too broad and you need precise AND matching across 2-5 concepts. Returns ranked results with project, date, snippets, and file paths.`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            concepts: { type: "array", items: { type: "string", minLength: 2 }, minItems: 2, maxItems: 5 },
+            limit: { type: "number", minimum: 1, maximum: 50, default: 10 },
+            after: OptionalDateInputJsonSchema,
+            before: OptionalDateInputJsonSchema,
+            project: optionalStringInputJsonSchema("Filter by project name (exact match)"),
+            session_id: optionalStringInputJsonSchema("Filter by session ID (exact match)"),
+            git_branch: optionalStringInputJsonSchema("Filter by git branch name (exact match)"),
+            response_format: { type: "string", enum: ["markdown", "json"], default: "markdown" }
+          },
+          required: ["concepts"],
+          additionalProperties: false
+        },
+        annotations: {
+          title: "Search Episodic Memory by Multiple Concepts",
           readOnlyHint: true,
           destructiveHint: false,
           idempotentHint: true,
@@ -27106,59 +27190,58 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     if (name === "search") {
       const params = SearchInputSchema.parse(args);
-      let resultText;
-      if (Array.isArray(params.query)) {
-        const options = {
-          limit: params.limit,
-          after: params.after,
-          before: params.before,
-          project: params.project,
-          session_id: params.session_id,
-          git_branch: params.git_branch
-        };
-        const results = await searchMultipleConcepts(params.query, options);
-        if (params.response_format === "json") {
-          resultText = JSON.stringify(
-            {
-              results,
-              count: results.length,
-              concepts: params.query
-            },
-            null,
-            2
-          );
-        } else {
-          resultText = await formatMultiConceptResults(results, params.query);
-        }
-      } else {
-        const options = {
-          mode: params.mode,
-          limit: params.limit,
-          after: params.after,
-          before: params.before,
-          project: params.project,
-          session_id: params.session_id,
-          git_branch: params.git_branch
-        };
-        const results = await searchConversations(params.query, options);
-        if (params.response_format === "json") {
-          resultText = JSON.stringify(
-            {
-              results: results.map((r) => ({
-                exchange: r.exchange,
-                similarity: r.similarity,
-                snippet: r.snippet
-              })),
-              count: results.length,
-              mode: params.mode
-            },
-            null,
-            2
-          );
-        } else {
-          resultText = await formatResults(results);
-        }
-      }
+      const options = {
+        mode: params.mode,
+        limit: params.limit,
+        after: params.after,
+        before: params.before,
+        project: params.project,
+        session_id: params.session_id,
+        git_branch: params.git_branch
+      };
+      const results = await searchConversations(params.query, options);
+      const resultText = params.response_format === "json" ? JSON.stringify(
+        {
+          results: results.map((r) => ({
+            exchange: r.exchange,
+            similarity: r.similarity,
+            snippet: r.snippet
+          })),
+          count: results.length,
+          mode: params.mode
+        },
+        null,
+        2
+      ) : await formatResults(results);
+      return {
+        content: [
+          {
+            type: "text",
+            text: resultText
+          }
+        ]
+      };
+    }
+    if (name === "search_multi") {
+      const params = SearchMultiInputSchema.parse(args);
+      const options = {
+        limit: params.limit,
+        after: params.after,
+        before: params.before,
+        project: params.project,
+        session_id: params.session_id,
+        git_branch: params.git_branch
+      };
+      const results = await searchMultipleConcepts(params.concepts, options);
+      const resultText = params.response_format === "json" ? JSON.stringify(
+        {
+          results,
+          count: results.length,
+          concepts: params.concepts
+        },
+        null,
+        2
+      ) : await formatMultiConceptResults(results, params.concepts);
       return {
         content: [
           {

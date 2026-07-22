@@ -1,0 +1,60 @@
+{
+  "sessionId": "test-gemini-session-001",
+  "projectHash": "abc123def456",
+  "startTime": "2026-01-15T10:00:00.000Z",
+  "lastUpdated": "2026-01-15T10:05:00.000Z",
+  "messages": [
+    {
+      "id": "msg-001",
+      "timestamp": "2026-01-15T10:00:00.000Z",
+      "type": "user",
+      "content": "How do I configure TLS certificates for the proxy service?"
+    },
+    {
+      "id": "msg-002",
+      "timestamp": "2026-01-15T10:00:15.000Z",
+      "type": "gemini",
+      "content": "",
+      "toolCalls": [
+        {
+          "id": "tc-001",
+          "name": "read_file",
+          "args": { "file_path": "/etc/proxy/tls.conf" },
+          "result": [{ "functionResponse": { "response": { "output": "cert_path = /etc/certs/proxy.pem" } } }],
+          "status": "success",
+          "timestamp": "2026-01-15T10:00:15.000Z"
+        }
+      ]
+    },
+    {
+      "id": "msg-003",
+      "timestamp": "2026-01-15T10:00:30.000Z",
+      "type": "gemini",
+      "content": "To configure TLS certificates for the proxy service, edit `/etc/proxy/tls.conf` and set the `cert_path` directive to point to your PEM certificate file."
+    },
+    {
+      "id": "msg-004",
+      "timestamp": "2026-01-15T10:02:00.000Z",
+      "type": "user",
+      "content": "What about mutual TLS?"
+    },
+    {
+      "id": "msg-005",
+      "timestamp": "2026-01-15T10:02:20.000Z",
+      "type": "gemini",
+      "content": "For mutual TLS, add `client_ca_path` and set `require_client_cert = true` in the same configuration file."
+    },
+    {
+      "id": "msg-006",
+      "timestamp": "2026-01-15T10:03:00.000Z",
+      "type": "info",
+      "content": "Session context updated"
+    },
+    {
+      "id": "msg-007",
+      "timestamp": "2026-01-15T10:04:00.000Z",
+      "type": "error",
+      "content": "Rate limit exceeded"
+    }
+  ]
+}

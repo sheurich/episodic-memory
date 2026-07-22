@@ -66,8 +66,45 @@ BUNDLED_NODE_GYP="$NODE_PREFIX/lib/node_modules/npm/node_modules/node-gyp/bin/no
 
 cd "$MODULE_DIR"
 
+run_node_gyp() {
+  local log_file status binary_mtime_ms
+  log_file="$(mktemp)"
+
+  set +e
+  "$@" 2>&1 | tee "$log_file"
+  status=${PIPESTATUS[0]}
+  set -e
+
+  if [[ "$status" -eq 0 ]]; then
+    rm -f "$log_file"
+    return 0
+  fi
+
+  # node-gyp 12 can fail after a successful build while cleaning up its
+  # temporary build/node_gyp_bins helper directory. Do not hide real build
+  # failures: only continue when that exact cleanup error happened and the
+  # native binary was relinked during this run. The normal verification step
+  # below still proves the target Node can load the rebuilt module.
+  if grep -q "build/node_gyp_bins" "$log_file" && [[ -f build/Release/better_sqlite3.node ]]; then
+    binary_mtime_ms="$($NODE_BIN -e "const fs = require('fs'); process.stdout.write(String(fs.statSync('build/Release/better_sqlite3.node').mtimeMs));")"
+    if "$NODE_BIN" -e "process.exit(Number('$binary_mtime_ms') >= Number('$BUILD_START_MS') ? 0 : 1);"; then
+      echo "warning: node-gyp failed during node_gyp_bins cleanup after producing the native binary; continuing to verification" >&2
+      rm -f "$log_file"
+      return 0
+    fi
+  fi
+
+  rm -f "$log_file"
+  return "$status"
+}
+
+# node-gyp 12 may lstat this helper directory during cleanup even when it did
+# not create it. Ensure it exists before starting the rebuild.
+mkdir -p build/node_gyp_bins
+BUILD_START_MS="$($NODE_BIN -e 'process.stdout.write(String(Date.now()))')"
+
 if [[ -f "$BUNDLED_NODE_GYP" ]]; then
-  "$NODE_BIN" "$BUNDLED_NODE_GYP" rebuild --release "--nodedir=$NODE_PREFIX"
+  run_node_gyp "$NODE_BIN" "$BUNDLED_NODE_GYP" rebuild --release "--nodedir=$NODE_PREFIX"
 else
   # Fallback: use node-gyp from PATH (may need `npm install -g node-gyp`).
   echo "warning: bundled node-gyp not found at $BUNDLED_NODE_GYP" >&2
@@ -77,7 +114,7 @@ else
     echo "error: node-gyp not found. Install with: npm install -g node-gyp" >&2
     exit 1
   fi
-  "$NODE_GYP" rebuild --release "--nodedir=$NODE_PREFIX"
+  run_node_gyp "$NODE_GYP" rebuild --release "--nodedir=$NODE_PREFIX"
 fi
 
 # ---------------------------------------------------------------------------

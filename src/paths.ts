@@ -165,3 +165,72 @@ export function getExcludedProjects(): string[] {
   // Default: no exclusions
   return [];
 }
+
+// ── Gemini CLI paths ──
+
+/**
+ * Get Gemini CLI base directory.
+ * Override with GEMINI_HOME for testing.
+ */
+export function getGeminiDir(): string {
+  return process.env.GEMINI_HOME || path.join(os.homedir(), '.gemini');
+}
+
+/**
+ * Get the directory containing Gemini CLI chat sessions.
+ * Sessions live under ~/.gemini/tmp/<projectHash>/chats/
+ */
+export function getGeminiChatsBaseDir(): string {
+  return path.join(getGeminiDir(), 'tmp');
+}
+
+// ── Pi paths ──
+
+/**
+ * Get Pi base directory.
+ * Override with PI_HOME for testing.
+ */
+export function getPiDir(): string {
+  return process.env.PI_HOME || path.join(os.homedir(), '.pi');
+}
+
+/**
+ * Get the directory containing Pi session JSONL files.
+ * Sessions live under ~/.pi/agent/sessions/<cwd-hash>/
+ */
+export function getPiSessionsDir(): string {
+  return path.join(getPiDir(), 'agent', 'sessions');
+}
+
+// ── OpenCode paths ──
+
+/**
+ * Get the OpenCode data directory.
+ * Override with OPENCODE_DATA_DIR for testing.
+ */
+export function getOpenCodeDataDir(): string {
+  if (process.env.OPENCODE_DATA_DIR) {
+    return process.env.OPENCODE_DATA_DIR;
+  }
+  const xdgDataHome = process.env.XDG_DATA_HOME;
+  if (xdgDataHome) {
+    return path.join(xdgDataHome, 'opencode');
+  }
+  return path.join(os.homedir(), '.local', 'share', 'opencode');
+}
+
+/**
+ * Get the path to the OpenCode SQLite database.
+ * Override with OPENCODE_DB for testing.
+ * Follows the same resolution as the OpenCode binary:
+ *   OPENCODE_DB (absolute) or <dataDir>/OPENCODE_DB (relative),
+ *   defaulting to <dataDir>/opencode.db.
+ */
+export function getOpenCodeDbPath(): string {
+  const envDb = process.env.OPENCODE_DB;
+  if (envDb) {
+    if (path.isAbsolute(envDb)) return envDb;
+    return path.join(getOpenCodeDataDir(), envDb);
+  }
+  return path.join(getOpenCodeDataDir(), 'opencode.db');
+}
