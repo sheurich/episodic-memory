@@ -2,11 +2,48 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { fileURLToPath } from 'node:url';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const serverPath = fileURLToPath(new URL('../dist/mcp-server.js', import.meta.url));
 
-let client: Client;
-let transport: StdioClientTransport;
+function buildMcpTestEnv(root: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === 'string') {
+      env[key] = value;
+    }
+  }
+  env.EPISODIC_MEMORY_CONFIG_DIR = join(root, 'config');
+  env.TEST_DB_PATH = join(root, 'db.sqlite');
+  env.TEST_ARCHIVE_DIR = join(root, 'archive');
+  env.TEST_PROJECTS_DIR = join(root, 'projects');
+  Reflect.deleteProperty(env, 'EPISODIC_MEMORY_DB_PATH');
+  return env;
+}
+
+it('builds an isolated MCP child environment', () => {
+  const root = join(tmpdir(), 'episodic-memory-mcp-test');
+  const previousDbPath = process.env.EPISODIC_MEMORY_DB_PATH;
+  process.env.EPISODIC_MEMORY_DB_PATH = join(root, 'inherited-db.sqlite');
+  try {
+    const env = buildMcpTestEnv(root);
+    expect(env).toMatchObject({
+      EPISODIC_MEMORY_CONFIG_DIR: join(root, 'config'),
+      TEST_DB_PATH: join(root, 'db.sqlite'),
+      TEST_ARCHIVE_DIR: join(root, 'archive'),
+      TEST_PROJECTS_DIR: join(root, 'projects'),
+    });
+    expect(env).not.toHaveProperty('EPISODIC_MEMORY_DB_PATH');
+  } finally {
+    if (previousDbPath === undefined) {
+      delete process.env.EPISODIC_MEMORY_DB_PATH;
+    } else {
+      process.env.EPISODIC_MEMORY_DB_PATH = previousDbPath;
+    }
+  }
+});
 
 type ToolContent = { type: string; text?: string };
 
@@ -16,21 +53,40 @@ function getTextContent(content: ToolContent[]): string {
   return textItem!.text!;
 }
 
-beforeAll(async () => {
-  client = new Client({ name: 'episodic-memory-test', version: '1.0.0' }, { capabilities: {} });
-  transport = new StdioClientTransport({
-    command: 'node',
-    args: [serverPath],
-    stderr: 'pipe',
-  });
-  await client.connect(transport);
-});
-
-afterAll(async () => {
-  await transport.close();
-});
-
 describe('MCP search tools', () => {
+  let client: Client;
+  let transport: StdioClientTransport | undefined;
+  let testDir: string | undefined;
+  let testDbPath: string;
+
+  beforeAll(async () => {
+    testDir = mkdtempSync(join(tmpdir(), 'episodic-memory-mcp-'));
+    testDbPath = join(testDir, 'db.sqlite');
+    mkdirSync(join(testDir, 'archive'), { recursive: true });
+    mkdirSync(join(testDir, 'projects'), { recursive: true });
+
+    client = new Client({ name: 'episodic-memory-test', version: '1.0.0' }, { capabilities: {} });
+    transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [serverPath],
+      stderr: 'pipe',
+      env: buildMcpTestEnv(testDir),
+    });
+    await client.connect(transport);
+  });
+
+  afterAll(async () => {
+    try {
+      if (transport) {
+        await transport.close();
+      }
+    } finally {
+      if (testDir) {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('advertises separate single and multi-concept search tools', async () => {
     const tools = await client.listTools();
     const searchTool = tools.tools.find((tool) => tool.name === 'search');
@@ -70,6 +126,7 @@ describe('MCP search tools', () => {
       results: expect.any(Array),
       mode: 'both',
     });
+    expect(existsSync(testDbPath)).toBe(true);
   });
 
   it('accepts multi-concept searches through search_multi', async () => {
