@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.3] - 2026-08-21
+
+### Added
+
+- Search now indexes conversations from Claude Code, Codex, Gemini CLI, OpenCode, and Pi. Results include source, session, working directory, branch, model, provider, and thinking metadata when the source records it.
+- Pi installations now include a session-start sync extension and a native search agent.
+- The MCP server now provides separate `search` and `search_multi` tools for single-concept and multi-concept queries.
+- Native-install CI tests clean installs and damaged-install recovery on Linux, macOS, and Windows with Node 24 and Node 26.
+
+### Fixed
+
+- npm 12 installations now approve only `better-sqlite3`, verify SQLite with the exact MCP Node.js runtime, repair an invalid binding once, and stop startup if verification still fails.
+- Dependency recovery ignores stale local lockfiles that can make npm report success while required packages remain missing.
+- The MCP wrapper now resolves its package root from its own path, so ambient plugin variables cannot redirect it to another checkout.
+- Node 26 installs now use a supported `better-sqlite3` release.
+- Windows indexing now handles native path separators, line endings, and file-lock permission tests correctly.
+
 ## [1.4.2] - 2026-05-21
 
 ### Fixed
