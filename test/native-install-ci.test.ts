@@ -20,7 +20,7 @@ describe('native install dependency policy', () => {
 });
 
 describe('native install CI workflow', () => {
-  it('defines exactly the six supported x64 OS and Node combinations', () => {
+  it('defines exactly the six supported OS and Node combinations on native runner architectures', () => {
     const workflow = read(workflowPath);
     const osValues = workflow.match(/^\s*os:\s*\[([^\]]+)\]/m)?.[1].split(',').map(value => value.trim());
     const nodeValues = workflow.match(/^\s*node:\s*\[([^\]]+)\]/m)?.[1].split(',').map(value => value.trim());
@@ -31,7 +31,8 @@ describe('native install CI workflow', () => {
     expect(workflow).toContain('runs-on: ${{ matrix.os }}');
     expect(workflow.match(/^\s*runs-on:/gm)).toHaveLength(1);
     expect(workflow).not.toMatch(/^\s+(?:include|exclude):/m);
-    expect(workflow).toContain('architecture: x64');
+    expect(workflow).not.toContain('architecture:');
+    expect(workflow).toContain('permissions:\n  contents: read');
   });
 
   it('uses the required actions, npm version, and lockfile-free clean install', () => {
@@ -71,6 +72,8 @@ describe('real native install verifier', () => {
     expect(verifier).toContain("requireFromRoot('onnxruntime-node')");
     expect(verifier).toContain("requireFromRoot('sqlite-vec')");
     expect(verifier).toContain('missing-dependency');
+    expect(verifier).toContain("rmSync(join(packageRoot, 'node_modules', 'onnxruntime-node'), { recursive: true, force: true })");
+    expect(verifier).not.toContain("'onnxruntime-node', 'package.json'");
     expect(verifier).toContain('missing-binding');
     expect(verifier).toContain('invalid-binding');
     expect(verifier).toContain("entry.name.endsWith('.node')");

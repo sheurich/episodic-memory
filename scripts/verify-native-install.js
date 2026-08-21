@@ -47,7 +47,7 @@ function verifyFreshRuntime() {
 
 function damageInstall(scenario) {
   if (scenario === 'missing-dependency') {
-    rmSync(join(packageRoot, 'node_modules', 'onnxruntime-node', 'package.json'));
+    rmSync(join(packageRoot, 'node_modules', 'onnxruntime-node'), { recursive: true, force: true });
     return;
   }
 

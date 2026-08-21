@@ -450,7 +450,7 @@ episodic-memory-mcp-server
 
 `better-sqlite3` is an ABI-bound native module.
 
-CI tests clean installs and repairs on x64 Linux, macOS, and Windows.
+CI tests clean installs and repairs on Linux, macOS, and Windows.
 
 The matrix uses Node 24, Node 26, and npm 12.0.2.
 
