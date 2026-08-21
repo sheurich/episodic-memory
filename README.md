@@ -79,7 +79,7 @@ The MCP server must be configured separately in `~/.pi/agent/mcp.json`:
   "mcpServers": {
     "episodic-memory": {
       "command": "node",
-      "args": ["<path-to-episodic-memory>/dist/mcp-server.js"]
+      "args": ["<path-to-episodic-memory>/cli/mcp-server-wrapper.js"]
     }
   }
 }
@@ -446,23 +446,25 @@ The MCP server can be used with any MCP-compatible client:
 episodic-memory-mcp-server
 ```
 
-### Native module and Node.js version pinning
+### Native module and Node.js version compatibility
 
-`better-sqlite3` is an ABI-bound native module: the binary compiled at install
-time must match the Node.js version that runs the MCP server at runtime. If
-your MCP client config pins a specific node binary (e.g. `node@24` via
-Homebrew), the module must be built with that same binary.
+`better-sqlite3` is an ABI-bound native module.
 
-`postinstall` attempts this automatically. If the MCP server fails on startup
-with a `NODE_MODULE_VERSION` mismatch, rebuild explicitly:
+Its binding must match the Node.js binary that runs the MCP server.
+
+Configure MCP clients to launch `cli/mcp-server-wrapper.js`.
+
+The wrapper tests the binding with that binary and repairs it once.
+
+It does not start the server if verification fails again.
+
+For manual recovery, use npm from the Node.js installation that starts MCP:
 
 ```bash
-# Rebuilds against Homebrew node@24 (or set NODE24=/path/to/node to override)
 npm run rebuild:native
 ```
 
-Run `rebuild:native` again after any `npm install`, `brew upgrade node@24`, or
-change to the node binary referenced in your MCP client config.
+Run this again after changing that Node.js binary if the wrapper reports that the binding remains unhealthy.
 
 ## Development
 

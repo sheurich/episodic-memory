@@ -1,3 +1,4 @@
+import { spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
 
@@ -37,4 +38,42 @@ export function findMissingDeps(pluginRoot) {
     return REQUIRED_PACKAGES.slice();
   }
   return REQUIRED_PACKAGES.filter(pkg => !existsSync(join(nodeModules, pkg, 'package.json')));
+}
+
+const BETTER_SQLITE3_PROBE = `
+const { createRequire } = require('module');
+const { join } = require('path');
+const requireFromPlugin = createRequire(join(process.argv[1], 'package.json'));
+const Database = requireFromPlugin('better-sqlite3');
+const db = new Database(':memory:');
+try {
+  const row = db.prepare('SELECT 42 AS n').get();
+  if (row.n !== 42) throw new Error('better-sqlite3 returned an unexpected result');
+} finally {
+  db.close();
+}
+`;
+
+/**
+ * Load and exercise better-sqlite3 in an isolated process using the exact Node
+ * executable that will run the MCP server.
+ */
+export function probeBetterSqlite3(pluginRoot) {
+  const result = spawnSync(process.execPath, ['-e', BETTER_SQLITE3_PROBE, pluginRoot], {
+    cwd: pluginRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  if (result.status === 0) return { ok: true };
+
+  const detail = [result.stderr, result.stdout, result.error?.message]
+    .filter(Boolean)
+    .map(value => value.trim())
+    .filter(Boolean)
+    .join('\n');
+  return {
+    ok: false,
+    error: detail || `native probe exited with status ${result.status}`,
+  };
 }
