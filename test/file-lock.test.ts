@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, chmodSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
 import { pathToFileURL } from 'url';
@@ -67,18 +67,11 @@ describe('file-lock — proper-lockfile wrapper (#97)', () => {
   });
 
   it('propagates unexpected I/O errors instead of masking them as "lock contention"', () => {
-    // chmod the directory read-only so openSync('a') hits EACCES on the lock
-    // target. The wrapper must throw rather than return null — otherwise sync
-    // would report "already running" for what's actually a disk problem.
-    const restrictedDir = join(testDir, 'no-write');
-    mkdirSync(restrictedDir);
-    try {
-      chmodSync(restrictedDir, 0o500); // r-x, no write
-      const restrictedLock = join(restrictedDir, 'lock');
-      expect(() => acquireFileLock(restrictedLock)).toThrow();
-    } finally {
-      try { chmodSync(restrictedDir, 0o700); } catch {}
-    }
+    // A file cannot contain the lock target on any supported platform.
+    // The wrapper must throw rather than report the failure as contention.
+    const parentFile = join(testDir, 'not-a-directory');
+    writeFileSync(parentFile, 'occupied', 'utf-8');
+    expect(() => acquireFileLock(join(parentFile, 'lock'))).toThrow();
   });
 });
 

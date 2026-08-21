@@ -430,13 +430,8 @@ async function parseCodexConversation(filePath, projectName, archivePath) {
  * Extracts project name from the file path and returns exchanges with metadata
  */
 export async function parseConversationFile(filePath) {
-    // Extract project name from path (directory name before the .jsonl file)
-    const pathParts = filePath.split('/');
-    let project = 'unknown';
-    // Find the parent directory name (second to last part)
-    if (pathParts.length >= 2) {
-        project = pathParts[pathParts.length - 2];
-    }
+    // Extract the parent directory with the current platform's path rules.
+    const project = path.basename(path.dirname(filePath)) || 'unknown';
     const exchanges = await parseConversation(filePath, project, filePath);
     return {
         project,

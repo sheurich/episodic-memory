@@ -8,7 +8,7 @@ const workflowPath = join(root, '.github', 'workflows', 'native-install.yml');
 const verifierPath = join(root, 'scripts', 'verify-native-install.js');
 
 function read(path: string): string {
-  return readFileSync(path, 'utf8');
+  return readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
 }
 
 describe('native install dependency policy', () => {
