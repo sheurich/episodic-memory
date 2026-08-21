@@ -62,12 +62,12 @@ writeFileSync(${JSON.stringify(join(packageDir, 'index.cjs'))}, ${JSON.stringify
   return root;
 }
 
-function runWrapper(root: string) {
+function runWrapper(root: string, claudePluginRoot = root) {
   return spawnSync(process.execPath, [join(root, 'cli', 'mcp-server-wrapper.js')], {
     encoding: 'utf8',
     env: {
       ...process.env,
-      CLAUDE_PLUGIN_ROOT: root,
+      CLAUDE_PLUGIN_ROOT: claudePluginRoot,
       PATH: `${join(root, 'bin')}${delimiter}${process.env.PATH ?? ''}`,
     },
   });
@@ -113,6 +113,18 @@ describe('better-sqlite3 native health probe', () => {
 
 describe('MCP server wrapper native repair', () => {
   const repairCommand = 'install --no-audit --no-fund\n';
+
+  it('uses its own package root when CLAUDE_PLUGIN_ROOT points elsewhere', () => {
+    const root = stageWrapperFixture(goodSqliteModule, false);
+    try {
+      const result = runWrapper(root, join(root, 'wrong-package'));
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(join(root, 'server-started'), 'utf8')).toBe('yes');
+      expect(() => readFileSync(join(root, 'npm-runs'))).toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it('reinstalls only the native dependency, rechecks, and starts the server', () => {
     const root = stageWrapperFixture(`throw new Error('missing native binding');`, true);

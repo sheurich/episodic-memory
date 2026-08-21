@@ -11,7 +11,7 @@ import { findMissingDeps, probeBetterSqlite3 } from './install-check.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || join(__dirname, '..');
+const PLUGIN_ROOT = join(__dirname, '..');
 
 function runNpmInstall() {
   return new Promise((resolve, reject) => {
