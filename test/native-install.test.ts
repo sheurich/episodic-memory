@@ -44,11 +44,21 @@ function stageWrapperFixture(sqliteModule: string, repair: boolean) {
 
   const npmPath = join(root, 'bin', process.platform === 'win32' ? 'npm.cmd' : 'npm');
   const packageDir = join(root, 'node_modules', 'better-sqlite3');
+  const stagedManifests = REQUIRED_PACKAGES.map(name => ({
+    directory: join(root, 'node_modules', name),
+    contents: JSON.stringify({
+      name,
+      version: '0.0.0',
+      ...(name === 'better-sqlite3' ? { main: 'index.cjs' } : {}),
+    }),
+  }));
   const npmScript = `#!/usr/bin/env node
 import { appendFileSync, mkdirSync, writeFileSync } from 'fs';
 appendFileSync(${JSON.stringify(join(root, 'npm-runs'))}, process.argv.slice(2).join(' ') + '\\n');
-mkdirSync(${JSON.stringify(packageDir)}, { recursive: true });
-writeFileSync(${JSON.stringify(join(packageDir, 'package.json'))}, ${JSON.stringify(JSON.stringify({ name: 'better-sqlite3', version: '0.0.0', main: 'index.cjs' }))});
+for (const manifest of ${JSON.stringify(stagedManifests)}) {
+  mkdirSync(manifest.directory, { recursive: true });
+  writeFileSync(manifest.directory + '/package.json', manifest.contents);
+}
 writeFileSync(${JSON.stringify(join(packageDir, 'index.cjs'))}, ${JSON.stringify(repair ? goodSqliteModule : sqliteModule)});
 `;
   if (process.platform === 'win32') {
@@ -112,7 +122,7 @@ describe('better-sqlite3 native health probe', () => {
 });
 
 describe('MCP server wrapper native repair', () => {
-  const repairCommand = 'install --no-audit --no-fund\n';
+  const repairCommand = 'install --package-lock=false --no-audit --no-fund\n';
 
   it('uses its own package root when CLAUDE_PLUGIN_ROOT points elsewhere', () => {
     const root = stageWrapperFixture(goodSqliteModule, false);
@@ -126,7 +136,21 @@ describe('MCP server wrapper native repair', () => {
     }
   });
 
-  it('reinstalls only the native dependency, rechecks, and starts the server', () => {
+  it('installs missing dependencies without consulting a stale lockfile, rechecks, and starts the server', () => {
+    const root = stageWrapperFixture(goodSqliteModule, true);
+    try {
+      rmSync(join(root, 'node_modules', 'onnxruntime-node'), { recursive: true, force: true });
+      writeFileSync(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {} }));
+      const result = runWrapper(root);
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(join(root, 'npm-runs'), 'utf8')).toBe(repairCommand);
+      expect(readFileSync(join(root, 'server-started'), 'utf8')).toBe('yes');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reinstalls only the native dependency without consulting a stale lockfile, rechecks, and starts the server', () => {
     const root = stageWrapperFixture(`throw new Error('missing native binding');`, true);
     try {
       const result = runWrapper(root);

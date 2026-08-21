@@ -1,0 +1,48 @@
+---
+name: Native install
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  native-install:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }} / x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [24.15.0, 26.x]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: ${{ matrix.node }}
+          architecture: x64
+      - name: Install npm 12.0.2
+        run: npm install --global npm@12.0.2 --package-lock=false --no-audit --no-fund
+      - name: Verify Node and npm versions
+        env:
+          EXPECTED_NODE_MAJOR: ${{ startsWith(matrix.node, '24') && '24' || '26' }}
+        run: >-
+          node -e "const { spawnSync } = require('node:child_process'); const nodeMajor = process.versions.node.split('.')[0]; if (nodeMajor !== process.env.EXPECTED_NODE_MAJOR) throw new Error('expected Node ' + process.env.EXPECTED_NODE_MAJOR + ', got ' + process.versions.node); const windows = process.platform === 'win32'; const npm = spawnSync(windows ? 'cmd.exe' : 'npm', windows ? ['/d', '/s', '/c', 'npm.cmd', '--version'] : ['--version'], { encoding: 'utf8', shell: false }); if (npm.status !== 0 || npm.stdout.trim() !== '12.0.2') throw new Error('expected npm 12.0.2, got ' + npm.stdout.trim());"
+      - name: Start clean
+        run: >-
+          node -e "const { rmSync } = require('node:fs'); for (const path of ['node_modules', 'package-lock.json']) rmSync(path, { recursive: true, force: true });"
+      - name: Install dependencies
+        run: npm install --package-lock=false --no-audit --no-fund
+      - name: Build
+        run: npm run build
+      - name: Verify fresh native runtime
+        run: node scripts/verify-native-install.js fresh
+      - name: Recover a missing required dependency manifest
+        run: node scripts/verify-native-install.js missing-dependency
+      - name: Recover a missing better-sqlite3 binding
+        run: node scripts/verify-native-install.js missing-binding
+      - name: Recover an invalid better-sqlite3 binding
+        run: node scripts/verify-native-install.js invalid-binding
+      - name: Run all tests serially
+        run: npm test -- --maxWorkers=1

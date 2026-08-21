@@ -18,8 +18,8 @@ function runNpmInstall() {
     const isWindows = process.platform === 'win32';
     const npmCommand = isWindows ? 'cmd.exe' : 'npm';
     const npmArgs = isWindows
-      ? ['/d', '/s', '/c', 'npm.cmd', 'install', '--no-audit', '--no-fund']
-      : ['install', '--no-audit', '--no-fund'];
+      ? ['/d', '/s', '/c', 'npm.cmd', 'install', '--package-lock=false', '--no-audit', '--no-fund']
+      : ['install', '--package-lock=false', '--no-audit', '--no-fund'];
 
     console.error('Installing episodic-memory dependencies...');
     console.error('This may take 30-60 seconds...');

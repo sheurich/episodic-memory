@@ -22,20 +22,21 @@ The `prebuild` and `pretest` hooks both regenerate `src/version.ts`. After sourc
 
 ## Version management
 
-Three files hold the plugin version, all kept in lockstep:
+Four files hold the plugin version, all kept in lockstep:
 
 - `package.json`
 - `.claude-plugin/plugin.json`
 - `.claude-plugin/marketplace.json` (plugins[0].version)
+- `.codex-plugin/plugin.json`
 
-Plus a fourth thing outside this repo:
+One registry outside this repo also holds the version:
 
 - `../superpowers-marketplace/.claude-plugin/marketplace.json` (the user-visible install registry)
 
 To bump in this repo:
 
-```
-./scripts/bump-version.sh X.Y.Z         # updates all three local files
+```bash
+./scripts/bump-version.sh X.Y.Z         # updates all four files
 ./scripts/bump-version.sh --check       # report current versions
 ./scripts/bump-version.sh --audit       # scan for stale references
 ```

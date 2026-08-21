@@ -27,4 +27,9 @@ describe('version sources of truth', () => {
     const marketplace = readJson('.claude-plugin/marketplace.json');
     expect(marketplace.plugins[0].version).toBe(pkg.version);
   });
+
+  it('.codex-plugin/plugin.json version equals package.json version', () => {
+    const plugin = readJson('.codex-plugin/plugin.json');
+    expect(plugin.version).toBe(pkg.version);
+  });
 });

@@ -450,6 +450,10 @@ episodic-memory-mcp-server
 
 `better-sqlite3` is an ABI-bound native module.
 
+CI tests clean installs and repairs on x64 Linux, macOS, and Windows.
+
+The matrix uses Node 24, Node 26, and npm 12.0.2.
+
 Its binding must match the Node.js binary that runs the MCP server.
 
 Configure MCP clients to launch `cli/mcp-server-wrapper.js`.
@@ -469,8 +473,8 @@ Run this again after changing that Node.js binary if the wrapper reports that th
 ## Development
 
 ```bash
-# Install dependencies
-npm install
+# Install dependencies without creating or consulting a lockfile
+npm install --package-lock=false --no-audit --no-fund
 
 # Run tests
 npm test
