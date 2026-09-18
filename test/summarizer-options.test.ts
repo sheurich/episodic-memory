@@ -21,6 +21,18 @@ describe('buildSummarizerQueryOptions', () => {
     expect(opts.persistSession).toBe(false);
   });
 
+  it('sets strictMcpConfig: true so summarizer subprocesses do not launch the user\'s MCP servers', () => {
+    const opts = buildSummarizerQueryOptions({ model: 'haiku' });
+    expect(opts.strictMcpConfig).toBe(true);
+    const resumeOpts = buildSummarizerQueryOptions({ model: 'haiku', sessionId: 'abc-123' });
+    expect(resumeOpts.strictMcpConfig).toBe(true);
+  });
+
+  it('sets settingSources: [] so summarizer subprocesses load no user settings, plugins, or hooks', () => {
+    const opts = buildSummarizerQueryOptions({ model: 'haiku' });
+    expect(opts.settingSources).toEqual([]);
+  });
+
   it('passes through the model and max_tokens', () => {
     const opts = buildSummarizerQueryOptions({ model: 'haiku' });
     expect(opts.model).toBe('haiku');
@@ -61,6 +73,18 @@ describe('buildSummarizerQueryOptions', () => {
   it('omits cwd when not provided', () => {
     const opts = buildSummarizerQueryOptions({ model: 'haiku', sessionId: 'abc-123' });
     expect(opts.cwd).toBeUndefined();
+  });
+
+  // tools: [] strips every built-in tool so a resumed mid-task session can't keep
+  // executing the task instead of summarizing.
+  it('disables all built-in tools via tools: [] so a resumed mid-task session cannot execute the task', () => {
+    const opts = buildSummarizerQueryOptions({ model: 'haiku', sessionId: 'abc-123' });
+    expect(opts.tools).toEqual([]);
+  });
+
+  it('applies the tool restriction on fresh (non-resume) sessions too, not only when resuming', () => {
+    const opts = buildSummarizerQueryOptions({ model: 'haiku' });
+    expect(opts.tools).toEqual([]);
   });
 });
 
@@ -119,6 +143,7 @@ describe('runCodexCommand', () => {
         if (message.method === 'thread/fork') {
           if (message.params.threadId !== 'session-123') throw new Error('wrong session id');
           if (message.params.ephemeral !== true) throw new Error('fork was not ephemeral');
+          if (message.params.excludeTurns !== true) throw new Error('fork did not set excludeTurns (required by codex-cli 0.150+ for paginated threads)');
           if (message.params.sandbox !== 'read-only') throw new Error('fork was not read-only');
           console.log(JSON.stringify({ id: message.id, result: { thread: { id: 'fork-456' } } }));
           return;

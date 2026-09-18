@@ -8,41 +8,11 @@ import { existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { findMissingDeps, probeBetterSqlite3 } from './install-check.js';
+import { acquireInstallLock, releaseInstallLock, runNpmInstall, waitForInstallLock } from './install-runner.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const PLUGIN_ROOT = join(__dirname, '..');
-
-function runNpmInstall() {
-  return new Promise((resolve, reject) => {
-    const isWindows = process.platform === 'win32';
-    const npmCommand = isWindows ? 'cmd.exe' : 'npm';
-    const npmArgs = isWindows
-      ? ['/d', '/s', '/c', 'npm.cmd', 'install', '--package-lock=false', '--no-audit', '--no-fund']
-      : ['install', '--package-lock=false', '--no-audit', '--no-fund'];
-
-    console.error('Installing episodic-memory dependencies...');
-    console.error('This may take 30-60 seconds...');
-
-    const child = spawn(npmCommand, npmArgs, {
-      cwd: PLUGIN_ROOT,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: false,
-    });
-
-    child.stdout.on('data', data => process.stderr.write(data));
-    child.stderr.on('data', data => process.stderr.write(data));
-    child.on('error', reject);
-    child.on('exit', code => {
-      if (code === 0) {
-        console.error('Dependencies installed successfully.');
-        resolve();
-      } else {
-        reject(new Error(`npm install failed with exit code ${code}`));
-      }
-    });
-  });
-}
+const PLUGIN_ROOT = process.env.EPISODIC_MEMORY_WRAPPER_ROOT || join(__dirname, '..');
 
 function runNativeRepair() {
   return new Promise((resolve, reject) => {
@@ -115,8 +85,22 @@ async function main() {
   let health = checkInstallHealth();
   if (!health.ok) {
     console.error(`Episodic-memory dependencies are unhealthy: ${health.error}`);
-    if (health.kind === 'native') await runNativeRepair();
-    else await runNpmInstall();
+    const lock = acquireInstallLock(PLUGIN_ROOT);
+    if (lock) {
+      try {
+        if (health.kind === 'native') {
+          await runNativeRepair();
+        } else {
+          const install = runNpmInstall(PLUGIN_ROOT, { lockHandle: lock });
+          await install.promise;
+        }
+      } finally {
+        releaseInstallLock(lock);
+      }
+    } else {
+      console.error('Another install is already in progress; waiting for it to finish...');
+      await waitForInstallLock(PLUGIN_ROOT);
+    }
     health = checkInstallHealth();
   }
 

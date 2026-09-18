@@ -11,7 +11,7 @@ export interface ToolCall {
   timestamp: string;
 }
 
-export type ConversationHarness = 'claude' | 'codex';
+export type ConversationHarness = 'claude' | 'codex' | 'cursor' | 'opencode' | 'omp';
 
 export interface ConversationExchange {
   id: string;
@@ -24,7 +24,7 @@ export interface ConversationExchange {
   lineEnd: number;
 
   /** Indexed source bucket; Codex transcripts are stored under Claude and distinguished by harness. */
-  source: AgentSource;
+  source?: AgentSource;
 
   // Conversation structure
   parentUuid?: string;

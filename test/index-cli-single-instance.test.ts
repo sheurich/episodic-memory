@@ -7,8 +7,8 @@ import { tmpdir } from 'os';
 import { acquireFileLock, releaseFileLock, type FileLockHandle } from '../src/file-lock.js';
 
 /**
- * Pi's index-all-sources and Claude's sync write the same index and archive.
- * Hold the real v1.4.2 lock and ensure index-cli exits before database work.
+ * index-cli and sync-cli write the same index and archive. Hold the real
+ * v1.4.2 lock and ensure index-cli exits before database work.
  */
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -27,8 +27,10 @@ describe('index-cli single-instance lock (#97 cross-harness)', () => {
   let heldLock: FileLockHandle | null = null;
 
   function runIndexCli(args: string[]): RunResult {
+    const env = { ...process.env, ...envOverrides };
+    delete env.EPISODIC_MEMORY_DB_PATH;
     const result = spawnSync(process.execPath, [INDEX_CLI, ...args], {
-      env: { ...process.env, ...envOverrides },
+      env,
       timeout: 120_000,
       encoding: 'utf-8',
     });

@@ -14,7 +14,20 @@ export interface SearchOptions {
   project?: string;     // exact match against e.project
   session_id?: string;  // exact match against e.session_id
   git_branch?: string;  // exact match against e.git_branch
+  include_sidechains?: boolean; // include subagent/workflow rows (default true)
 }
+
+/**
+ * Distance penalty (L2, in the same units as vec.distance) added to a
+ * sidechain row's score so that an equally-relevant main-thread exchange
+ * ranks ahead of it. Sidechains (subagent and `Workflow` transcripts) carry
+ * the substance of orchestrated sessions, so they must stay reachable; this
+ * only de-prioritizes them on ties and near-ties, letting a clearly-more-
+ * relevant sidechain still outrank a weaker main-thread match. Chosen small:
+ * ~0.05 in L2 distance is a few points of cosine similarity for typical
+ * normalized embeddings.
+ */
+const SIDECHAIN_DISTANCE_PENALTY = 0.05;
 
 /**
  * Build the AND-clause and bound-parameter list that constrains a search
@@ -50,8 +63,41 @@ function buildSearchFilters(options: SearchOptions): { sql: string; params: unkn
   };
 }
 
-function hasMetadataFilters(options: SearchOptions): boolean {
-  return Boolean(options.project || options.session_id || options.git_branch);
+/**
+ * Escape LIKE wildcards so user input is treated as a literal substring.
+ * Callers must use `ESCAPE '\\'` on the LIKE expression.
+ */
+export function escapeLikePattern(term: string): string {
+  return term.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
+/**
+ * Split a text-search query into whitespace-separated terms.
+ * Multi-word queries match when every term appears somewhere in the exchange
+ * (user or assistant message), in any order — not only as one contiguous phrase.
+ */
+export function tokenizeTextQuery(query: string): string[] {
+  return query.trim().split(/\s+/).filter(t => t.length > 0);
+}
+
+/**
+ * Build the text-match WHERE fragment and bound params for LIKE search.
+ * One AND-ed clause per token; each token may hit user_message or assistant_message.
+ */
+export function buildTextMatchClause(query: string): { sql: string; params: string[] } {
+  const tokens = tokenizeTextQuery(query);
+  // Empty / whitespace-only: keep previous %% semantics (match all messages).
+  const terms = tokens.length > 0 ? tokens : [''];
+  const parts: string[] = [];
+  const params: string[] = [];
+  for (const term of terms) {
+    parts.push(
+      `(e.user_message LIKE ? ESCAPE '\\' OR e.assistant_message LIKE ? ESCAPE '\\')`
+    );
+    const pattern = `%${escapeLikePattern(term)}%`;
+    params.push(pattern, pattern);
+  }
+  return { sql: parts.join(' AND '), params };
 }
 
 const EXCHANGE_SELECT_COLUMNS = `
@@ -138,6 +184,8 @@ export async function searchConversations(
   options: SearchOptions = {}
 ): Promise<SearchResult[]> {
   const { limit = 10, mode = 'both', after, before } = options;
+  const includeSidechains = options.include_sidechains !== false;
+  const sidechainClause = includeSidechains ? '' : 'AND e.is_sidechain = 0';
 
   // Validate date parameters
   if (after) validateISODate(after, '--after');
@@ -151,11 +199,11 @@ export async function searchConversations(
 
   if (mode === 'vector' || mode === 'both') {
     // Vector similarity search.
-    // vec0 applies KNN before WHERE, so when extra metadata filters are
-    // active we ask for more candidates than `limit` and trim afterwards.
+    // vec0 applies KNN before the WHERE clause and before our sidechain
+    // de-rank, so we over-fetch candidates and trim after the final ordering.
     await initEmbeddings();
     const queryEmbedding = await generateQueryEmbedding(query);
-    const k = hasMetadataFilters(options) ? limit * 3 : limit;
+    const k = limit * 3;
 
     const stmt = db.prepare(`
       SELECT
@@ -165,15 +213,16 @@ export async function searchConversations(
       JOIN exchanges AS e ON vec.id = e.id
       WHERE vec.embedding MATCH ?
         AND k = ?
-        AND e.is_sidechain = 0
+        ${sidechainClause}
         ${filterClause}
-      ORDER BY vec.distance ASC
+      ORDER BY (vec.distance + e.is_sidechain * ?) ASC
     `);
 
     results = stmt.all(
       Buffer.from(new Float32Array(queryEmbedding).buffer),
       k,
-      ...filterParams
+      ...filterParams,
+      SIDECHAIN_DISTANCE_PENALTY
     );
     if (results.length > limit) {
       results = results.slice(0, limit);
@@ -181,20 +230,25 @@ export async function searchConversations(
   }
 
   if (mode === 'text' || mode === 'both') {
-    // Text search
+    // Text search: AND of per-token LIKE patterns so multi-word queries match
+    // when every term appears somewhere in the exchange (any order, either field).
+    // See #127 — whole-query contiguous substring matching returned empty for
+    // typical multi-word searches that are not verbatim phrases. Sidechain rows
+    // are de-ranked (ordered after main-thread rows), not excluded (#128).
+    const { sql: textMatchSql, params: textMatchParams } = buildTextMatchClause(query);
     const textStmt = db.prepare(`
       SELECT
         ${EXCHANGE_SELECT_COLUMNS},
         0 as distance
       FROM exchanges AS e
-      WHERE (e.user_message LIKE ? OR e.assistant_message LIKE ?)
-        AND e.is_sidechain = 0
+      WHERE ${textMatchSql}
+        ${sidechainClause}
         ${filterClause}
-      ORDER BY e.timestamp DESC
+      ORDER BY e.is_sidechain ASC, e.timestamp DESC
       LIMIT ?
     `);
 
-    const textResults = textStmt.all(`%${query}%`, `%${query}%`, ...filterParams, limit);
+    const textResults = textStmt.all(...textMatchParams, ...filterParams, limit);
 
     if (mode === 'both') {
       // Merge and deduplicate by ID
