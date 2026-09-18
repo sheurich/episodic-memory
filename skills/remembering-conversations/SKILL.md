@@ -41,6 +41,33 @@ The search workflow will:
 
 **Saves 50-100x context vs. loading raw conversations.**
 
+### opencode
+
+Use the MCP tools directly unless a local search agent is available:
+
+1. Search with the episodic-memory `search` tool
+2. Read the top 2-5 results with the episodic-memory `read` tool
+3. Synthesize findings in your response
+4. Include source pointers so the user can inspect the original conversations
+
+### Pi
+
+Use the `search-conversations` subagent if subagent delegation is requested:
+
+```
+subagent({
+  agent: "search-conversations",
+  task: "Search for [specific query or topic]. Focus on [what you're looking for - decisions, patterns, gotchas, code examples]."
+})
+```
+
+Or use the native extension tools directly in the current session:
+
+1. Search with `search_conversations`: `search_conversations({ query: "...", mode: "both", limit: 10 })`
+2. Read the top 2-5 results with `read_conversation`: `read_conversation({ path: "...", startLine: ..., endLine: ... })`
+3. Synthesize findings in your response (200-1000 words)
+4. Include source pointers so the user can inspect the original conversations
+
 ## When to Use
 
 Use this whenever the current task would benefit from information you may have learned before, even if the user did not explicitly ask you to search.
@@ -68,11 +95,12 @@ Use this whenever the current task would benefit from information you may have l
 - For info in current conversation
 - Before understanding what you're being asked to do
 
-## Direct MCP Tool Access
+## Direct Tool Access
 
 Use these directly when a search agent is unavailable or the current harness does not support agent dispatch:
-- `mcp__plugin_episodic-memory_episodic-memory__search`
-- `mcp__plugin_episodic-memory_episodic-memory__read`
+- **Pi:** `search_conversations` and `read_conversation` (native tools registered by the Pi extension)
+- **Claude Code:** `mcp__plugin_episodic-memory_episodic-memory__search` and `mcp__plugin_episodic-memory_episodic-memory__read`
+- **Codex / opencode:** `search` and `read` on the `episodic-memory` MCP server
 
 When using MCP tools directly, keep context small: search first, then read only the top 2-5 relevant conversations or line ranges.
 

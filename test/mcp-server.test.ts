@@ -1,26 +1,24 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const serverPath = fileURLToPath(new URL('../dist/mcp-server.js', import.meta.url));
 
 function buildMcpTestEnv(root: string): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (typeof value === 'string') {
-      env[key] = value;
-    }
-  }
-  env.EPISODIC_MEMORY_CONFIG_DIR = join(root, 'config');
-  env.TEST_DB_PATH = join(root, 'db.sqlite');
-  env.TEST_ARCHIVE_DIR = join(root, 'archive');
-  env.TEST_PROJECTS_DIR = join(root, 'projects');
-  Reflect.deleteProperty(env, 'EPISODIC_MEMORY_DB_PATH');
-  return env;
+  return {
+    HOME: join(root, 'home'),
+    USERPROFILE: join(root, 'home'),
+    XDG_CONFIG_HOME: join(root, 'xdg-config'),
+    XDG_DATA_HOME: join(root, 'xdg-data'),
+    EPISODIC_MEMORY_CONFIG_DIR: join(root, 'config'),
+    TEST_DB_PATH: join(root, 'db.sqlite'),
+    TEST_ARCHIVE_DIR: join(root, 'archive'),
+    TEST_PROJECTS_DIR: join(root, 'projects'),
+  };
 }
 
 it('builds an isolated MCP child environment', () => {
@@ -30,6 +28,8 @@ it('builds an isolated MCP child environment', () => {
   try {
     const env = buildMcpTestEnv(root);
     expect(env).toMatchObject({
+      HOME: join(root, 'home'),
+      USERPROFILE: join(root, 'home'),
       EPISODIC_MEMORY_CONFIG_DIR: join(root, 'config'),
       TEST_DB_PATH: join(root, 'db.sqlite'),
       TEST_ARCHIVE_DIR: join(root, 'archive'),

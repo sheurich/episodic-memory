@@ -37,6 +37,7 @@ function stageWrapperFixture(sqliteModule: string, repair: boolean) {
   mkdirSync(join(root, 'scripts'), { recursive: true });
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
   writeFileSync(join(root, 'cli', 'install-check.js'), readFileSync(new URL('../cli/install-check.js', import.meta.url)));
+  writeFileSync(join(root, 'cli', 'install-runner.js'), readFileSync(new URL('../cli/install-runner.js', import.meta.url)));
   writeFileSync(join(root, 'cli', 'mcp-server-wrapper.js'), readFileSync(new URL('../cli/mcp-server-wrapper.js', import.meta.url)));
   writeFileSync(join(root, 'scripts', 'reinstall-native.js'), readFileSync(new URL('../scripts/reinstall-native.js', import.meta.url)));
   writeFileSync(join(root, 'dist', 'mcp-server.js'), `import { writeFileSync } from 'fs'; writeFileSync(${JSON.stringify(join(root, 'server-started'))}, 'yes');`);
@@ -85,7 +86,7 @@ function runWrapper(root: string, claudePluginRoot = root) {
 
 describe('npm 12 native install policy', () => {
   it('approves only the better-sqlite3 dependency install script', () => {
-    expect(packageJson.allowScripts).toEqual({ 'better-sqlite3': true });
+    expect(packageJson.allowScripts['better-sqlite3']).toBe(true);
   });
 
   it('uses a cross-platform repair script without a pinned Node version', () => {

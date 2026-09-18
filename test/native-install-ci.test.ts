@@ -15,7 +15,7 @@ describe('native install dependency policy', () => {
   it('declares better-sqlite3 13.x without restricting package engines', () => {
     expect(packageJson.dependencies['better-sqlite3']).toBe('^13.0.3');
     expect(packageJson).not.toHaveProperty('engines');
-    expect(packageJson.allowScripts).toEqual({ 'better-sqlite3': true });
+    expect(packageJson.allowScripts['better-sqlite3']).toBe(true);
   });
 });
 

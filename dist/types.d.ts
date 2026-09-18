@@ -9,7 +9,7 @@ export interface ToolCall {
     isError: boolean;
     timestamp: string;
 }
-export type ConversationHarness = 'claude' | 'codex';
+export type ConversationHarness = 'claude' | 'codex' | 'cursor' | 'opencode' | 'omp';
 export interface ConversationExchange {
     id: string;
     project: string;
@@ -20,7 +20,7 @@ export interface ConversationExchange {
     lineStart: number;
     lineEnd: number;
     /** Indexed source bucket; Codex transcripts are stored under Claude and distinguished by harness. */
-    source: AgentSource;
+    source?: AgentSource;
     parentUuid?: string;
     isSidechain?: boolean;
     harness?: ConversationHarness;
