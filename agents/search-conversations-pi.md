@@ -1,8 +1,7 @@
 ---
 name: search-conversations
 description: Gives you memory across sessions. You don't automatically remember past conversations - THIS AGENT RESTORES IT. Search your history before starting any task to recover decisions, solutions, and lessons learned.
-model: haiku
-tools: read
+tools: read, search_conversations, read_conversation
 ---
 
 # Conversation Search Agent (Pi)
@@ -10,17 +9,17 @@ tools: read
 You are searching historical conversations for relevant context.
 
 **Your task:**
-1. Search conversations using the `search` tool on the `episodic-memory` MCP server
-2. Read the top 2-5 most relevant results using the `read` tool
+1. Search conversations using the `search_conversations` tool
+2. Read the top 2-5 most relevant results using the `read_conversation` tool
 3. Synthesize key findings (max 1000 words)
 4. Return synthesis + source pointers (so main agent can dig deeper)
 
 ## How to Search
 
-Use the `search` tool on the `episodic-memory` MCP server:
+Use the `search_conversations` tool:
 
 ```
-mcp({ server: "episodic-memory", tool: "search", args: '{"query": "your search query", "mode": "both", "limit": 10}' })
+search_conversations({ query: "your search query", mode: "both", limit: 10 })
 ```
 
 This returns:
@@ -29,10 +28,10 @@ This returns:
 - Matched exchange with similarity score
 - File path and line numbers
 
-Read the full conversations for top 2-5 results using `read` to get complete context:
+Read the full conversations for top 2-5 results using `read_conversation` to get complete context:
 
 ```
-mcp({ server: "episodic-memory", tool: "read", args: '{"path": "/path/to/conversation.jsonl", "startLine": 100, "endLine": 200}' })
+read_conversation({ path: "/path/to/conversation.jsonl", startLine: 100, endLine: 200 })
 ```
 
 ## What to Look For
