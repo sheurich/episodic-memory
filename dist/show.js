@@ -201,7 +201,8 @@ export function formatConversationAsHTML(jsonl) {
         return formatMarkdownDocumentAsHTML(formatCodexConversationAsMarkdown(lines));
     }
     if (isPiSession(lines)) {
-        return formatMarkdownDocumentAsHTML(formatPiConversationAsMarkdown(lines));
+        const markdown = formatPiConversationAsMarkdown(lines);
+        return markdown ? formatMarkdownDocumentAsHTML(markdown) : '';
     }
     const allMessages = lines.map(line => JSON.parse(line));
     // Filter out system messages and messages with no content
@@ -769,7 +770,7 @@ function isPiSession(lines) {
             parsed.message &&
             typeof parsed.message === 'object' &&
             'parentId' in parsed &&
-            ['user', 'assistant', 'toolResult', 'bashExecution'].includes(parsed.message.role)) {
+            ['user', 'assistant', 'toolResult', 'bashExecution', 'system'].includes(parsed.message.role)) {
             return true;
         }
     }
@@ -811,7 +812,7 @@ function formatPiConversationAsMarkdown(lines) {
             });
         }
     }
-    const renderable = messageEntries.filter(e => e.message.role !== 'toolResult');
+    const renderable = messageEntries.filter(e => e.message.role !== 'toolResult' && e.message.role !== 'system');
     if (renderable.length === 0) {
         return '';
     }
