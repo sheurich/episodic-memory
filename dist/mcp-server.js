@@ -32282,7 +32282,7 @@ function isPiSession(lines) {
     if (parsed.type === "thinking_level_change" || parsed.type === "model_change") {
       return true;
     }
-    if (parsed.type === "message" && parsed.message && typeof parsed.message === "object" && "parentId" in parsed && ["user", "assistant", "toolResult", "bashExecution"].includes(parsed.message.role)) {
+    if (parsed.type === "message" && parsed.message && typeof parsed.message === "object" && "parentId" in parsed && ["user", "assistant", "toolResult", "bashExecution", "system"].includes(parsed.message.role)) {
       return true;
     }
   }
@@ -32323,7 +32323,9 @@ function formatPiConversationAsMarkdown(lines) {
       });
     }
   }
-  const renderable = messageEntries.filter((e) => e.message.role !== "toolResult");
+  const renderable = messageEntries.filter(
+    (e) => e.message.role !== "toolResult" && e.message.role !== "system"
+  );
   if (renderable.length === 0) {
     return "";
   }

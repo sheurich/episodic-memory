@@ -34,8 +34,8 @@ interface PiContentBlock {
 }
 
 interface PiMessage {
-  role: 'user' | 'assistant' | 'toolResult';
-  content: PiContentBlock[];
+  role: 'user' | 'assistant' | 'toolResult' | 'system';
+  content: string | PiContentBlock[];
   api?: string;
   provider?: string;
   model?: string;
@@ -187,11 +187,13 @@ export async function parsePiConversation(
     if (msg.role === 'user') {
       finalizeExchange();
 
-      // Extract text from content blocks
-      const textParts = (msg.content || [])
-        .filter(b => b.type === 'text' && b.text)
-        .map(b => b.text!);
-      const userText = textParts.join('\n') || '(no text)';
+      // User content may be plain text or multimodal content blocks.
+      const userText = (typeof msg.content === 'string'
+        ? msg.content
+        : (Array.isArray(msg.content) ? msg.content : [])
+          .filter(b => b.type === 'text' && b.text)
+          .map(b => b.text!)
+          .join('\n')) || '(no text)';
 
       currentExchange = {
         userMessage: userText,
@@ -205,7 +207,7 @@ export async function parsePiConversation(
       const textParts: string[] = [];
       const toolCalls: ToolCall[] = [];
 
-      for (const block of msg.content || []) {
+      for (const block of Array.isArray(msg.content) ? msg.content : []) {
         if (block.type === 'text' && block.text?.trim()) {
           textParts.push(block.text);
         } else if (block.type === 'toolCall') {

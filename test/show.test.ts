@@ -238,6 +238,96 @@ function piJsonl(): string {
   ].map(line => JSON.stringify(line)).join('\n');
 }
 
+const piSystemEntry = {
+  type: 'message',
+  id: 'private-system-id',
+  parentId: null,
+  timestamp: '2026-05-12T18:00:00.500Z',
+  message: {
+    role: 'system',
+    content: 'Private system context',
+    sections: { 'Private prompt section': 'Private section content', removed: null },
+    toolsAdded: [{ name: 'private_tool', description: 'Private tool', parameters: {} }],
+    toolsRemoved: [{ name: 'private_removed_tool' }],
+  },
+};
+
+function piJsonlWithSystem(content: unknown): string {
+  const entries = piJsonl().split('\n').map(line => JSON.parse(line));
+  entries[2].message.content = content;
+  // Keep physical line positions explicit for the range assertions below.
+  return [entries[0], entries[1], piSystemEntry, entries[2], entries[3],
+    piSystemEntry, entries[4], entries[5], piSystemEntry]
+    .map(entry => JSON.stringify(entry)).join('\n');
+}
+
+describe('Pi 1.2.0 system context rendering', () => {
+  it.each([
+    ['Markdown', formatConversationAsMarkdown],
+    ['HTML', formatConversationAsHTML],
+  ])('should detect headerless Pi from a system entry with parentId in %s', (_label, format) => {
+    // Only the system entry carries parentId, isolating it as the format indicator.
+    const jsonl = [piSystemEntry, {
+      type: 'message',
+      message: { role: 'user', content: 'Visible prompt' },
+    }].map(entry => JSON.stringify(entry)).join('\n');
+
+    const rendered = format(jsonl);
+    expect(rendered).toContain('Pi');
+    expect(rendered).toContain('Visible prompt');
+    expect(rendered).not.toContain('Private');
+  });
+
+  it.each([
+    ['string', 'Please inspect the config loader.'],
+    ['multimodal array', [
+      { type: 'text', text: 'Please inspect the config loader.' },
+      { type: 'image', data: 'synthetic-image', mimeType: 'image/png' },
+    ]],
+  ])('should omit system context in Markdown and HTML with %s user content', (_label, content) => {
+    const jsonl = piJsonlWithSystem(content);
+    for (const rendered of [formatConversationAsMarkdown(jsonl), formatConversationAsHTML(jsonl)]) {
+      expect(rendered).toContain('Please inspect the config loader.');
+      expect(rendered).toMatch(/I(?:'|&#39;)ll take a look\./);
+      expect(rendered).toContain('read');
+      expect(rendered).toContain('src/config.ts');
+      expect(rendered).toContain('export function loadConfig() {}');
+      expect(rendered).toContain('The config loader reads the default profile first.');
+      expect(rendered).toContain('User');
+      expect(rendered).toContain('Agent');
+      expect(rendered).not.toContain('Private');
+      expect(rendered).not.toContain('private_tool');
+      expect(rendered).not.toContain('private-system-id');
+    }
+  });
+
+  it('should preserve inclusive line slicing while omitting system context', () => {
+    const jsonl = piJsonlWithSystem('Please inspect the config loader.');
+    const markdown = formatConversationAsMarkdown(jsonl, 3, 7);
+    const html = formatConversationAsHTML(jsonl.split('\n').slice(2, 7).join('\n'));
+    for (const rendered of [markdown, html]) {
+      expect(rendered).toContain('Please inspect the config loader.');
+      expect(rendered).toMatch(/I(?:'|&#39;)ll take a look\./);
+      expect(rendered).toContain('export function loadConfig() {}');
+      expect(rendered).not.toContain('The config loader reads the default profile first.');
+      expect(rendered).not.toContain('Private');
+    }
+    expect(formatConversationAsMarkdown(jsonl, 3, 3)).toBe('');
+    expect(formatConversationAsMarkdown(jsonl, 9, 9)).toBe('');
+  });
+
+  it.each([
+    ['headerless Markdown', formatConversationAsMarkdown, false],
+    ['headered Markdown', formatConversationAsMarkdown, true],
+    ['headerless HTML', formatConversationAsHTML, false],
+    ['headered HTML', formatConversationAsHTML, true],
+  ])('should render system-only %s empty', (_label, format, withHeader) => {
+    const header = piJsonl().split('\n')[0];
+    const system = JSON.stringify(piSystemEntry);
+    expect(format(withHeader ? `${header}\n${system}` : system)).toBe('');
+  });
+});
+
 function opencodeJsonl(): string {
   return [
     {
