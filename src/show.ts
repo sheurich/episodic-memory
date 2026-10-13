@@ -234,7 +234,8 @@ export function formatConversationAsHTML(jsonl: string): string {
     return formatMarkdownDocumentAsHTML(formatCodexConversationAsMarkdown(lines));
   }
   if (isPiSession(lines)) {
-    return formatMarkdownDocumentAsHTML(formatPiConversationAsMarkdown(lines));
+    const markdown = formatPiConversationAsMarkdown(lines);
+    return markdown ? formatMarkdownDocumentAsHTML(markdown) : '';
   }
 
   const allMessages: ConversationMessage[] = lines.map(line => JSON.parse(line));
@@ -841,7 +842,7 @@ function isPiSession(lines: string[]): boolean {
       parsed.message &&
       typeof parsed.message === 'object' &&
       'parentId' in parsed &&
-      ['user', 'assistant', 'toolResult', 'bashExecution'].includes(parsed.message.role)
+      ['user', 'assistant', 'toolResult', 'bashExecution', 'system'].includes(parsed.message.role)
     ) {
       return true;
     }
@@ -888,7 +889,9 @@ function formatPiConversationAsMarkdown(lines: string[]): string {
     }
   }
 
-  const renderable = messageEntries.filter(e => e.message.role !== 'toolResult');
+  const renderable = messageEntries.filter(
+    e => e.message.role !== 'toolResult' && e.message.role !== 'system'
+  );
   if (renderable.length === 0) {
     return '';
   }

@@ -5,7 +5,7 @@
  * pick up new conversations from Claude, Gemini, Pi, and OpenCode.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import * as path from "node:path";
 
