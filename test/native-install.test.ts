@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { delimiter, join } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
@@ -30,7 +30,8 @@ function stageDependencies(root: string, sqliteModule: string): void {
 }
 
 function stageWrapperFixture(sqliteModule: string, repair: boolean) {
-  const root = mkdtempSync(join(tmpdir(), 'episodic-memory-wrapper-'));
+  // Canonical path: the Windows installer compares realpaths (8.3 short names, /private/var).
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'episodic-memory-wrapper-')));
   mkdirSync(join(root, 'cli'), { recursive: true });
   mkdirSync(join(root, 'dist'), { recursive: true });
   mkdirSync(join(root, 'bin'), { recursive: true });
@@ -65,6 +66,7 @@ writeFileSync(${JSON.stringify(join(packageDir, 'index.cjs'))}, ${JSON.stringify
   if (process.platform === 'win32') {
     writeFileSync(npmPath, `@"${process.execPath}" "${join(root, 'bin', 'npm.mjs')}" %*\r\n`);
     writeFileSync(join(root, 'bin', 'npm.mjs'), npmScript.replace(/^#!.*\n/, ''));
+    stageTrustedWindowsNpm(root, npmScript.replace(/^#!.*\n/, ''));
   } else {
     writeFileSync(npmPath, npmScript);
     chmodSync(npmPath, 0o755);
@@ -73,8 +75,32 @@ writeFileSync(${JSON.stringify(join(packageDir, 'index.cjs'))}, ${JSON.stringify
   return root;
 }
 
-function runWrapper(root: string, claudePluginRoot = root) {
-  return spawnSync(process.execPath, [join(root, 'cli', 'mcp-server-wrapper.js')], {
+/**
+ * On Windows the dependency installer ignores PATH and only runs the npm-cli.js
+ * that sits beside the canonical node executable. Stage a node next to a stub
+ * npm package so that path resolves to the stub instead of the runner's real npm.
+ */
+function stageTrustedWindowsNpm(root: string, stubSource: string): void {
+  const nodeDir = join(root, 'node');
+  const npmDir = join(nodeDir, 'node_modules', 'npm');
+  mkdirSync(join(npmDir, 'bin'), { recursive: true });
+  writeFileSync(join(npmDir, 'package.json'), JSON.stringify({ name: 'npm', type: 'module', bin: { npm: 'bin/npm-cli.js' } }));
+  writeFileSync(join(npmDir, 'bin', 'npm-cli.js'), stubSource);
+  const nodeExe = join(nodeDir, 'node.exe');
+  try {
+    linkSync(process.execPath, nodeExe);
+  } catch {
+    copyFileSync(process.execPath, nodeExe);
+  }
+}
+
+/** Node that resolves the stub npm for dependency installs on every platform. */
+function installerNode(root: string): string {
+  return process.platform === 'win32' ? join(root, 'node', 'node.exe') : process.execPath;
+}
+
+function runWrapper(root: string, claudePluginRoot = root, nodeExecutable = process.execPath) {
+  return spawnSync(nodeExecutable, [join(root, 'cli', 'mcp-server-wrapper.js')], {
     encoding: 'utf8',
     env: {
       ...process.env,
@@ -142,7 +168,7 @@ describe('MCP server wrapper native repair', () => {
     try {
       rmSync(join(root, 'node_modules', 'onnxruntime-node'), { recursive: true, force: true });
       writeFileSync(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {} }));
-      const result = runWrapper(root);
+      const result = runWrapper(root, root, installerNode(root));
       expect(result.status, result.stderr).toBe(0);
       expect(readFileSync(join(root, 'npm-runs'), 'utf8')).toBe(repairCommand);
       expect(readFileSync(join(root, 'server-started'), 'utf8')).toBe('yes');
