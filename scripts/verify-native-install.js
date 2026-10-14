@@ -104,7 +104,7 @@ function runWrapper(scenario) {
     if (scenario === 'fresh' && output.includes('dependencies are unhealthy')) {
       throw new Error('fresh install unexpectedly needed repair');
     }
-    if (scenario === 'missing-dependency' && count(output, 'Installing episodic-memory dependencies...') !== 1) {
+    if (scenario === 'missing-dependency' && count(output, 'Installing episodic-memory dependencies (first run only)...') !== 1) {
       throw new Error('missing dependency was not repaired exactly once');
     }
     if ((scenario === 'missing-binding' || scenario === 'invalid-binding') && count(output, 'episodic-memory: better-sqlite3 is ready under') !== 1) {
