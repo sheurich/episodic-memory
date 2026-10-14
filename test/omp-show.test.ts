@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatConversationAsMarkdown } from '../src/show.js';
+import { formatConversationAsHTML, formatConversationAsMarkdown } from '../src/show.js';
 
 function ompJsonl(): string {
   const lines = [
@@ -29,13 +29,34 @@ function ompJsonl(): string {
 }
 
 describe('show command - OMP markdown formatting', () => {
-  it('detects an OMP transcript and renders user + assistant text, excluding thinking', () => {
+  it('detects an OMP transcript from structured session metadata and renders user + assistant text, excluding thinking', () => {
     const markdown = formatConversationAsMarkdown(ompJsonl());
 
-    expect(markdown).toMatch(/Oh My Pi|OMP/);
+    expect(markdown).toContain('**Harness:** Oh My Pi (OMP)');
     expect(markdown).toContain('omp_sess_show');
     expect(markdown).toContain('Please render an OMP transcript.');
     expect(markdown).toContain('OMP transcripts render as markdown.');
     expect(markdown).not.toContain('HIDDEN chain of thought');
+  });
+
+  it.each([
+    ['Markdown', formatConversationAsMarkdown],
+    ['HTML', formatConversationAsHTML],
+  ])('does not render system messages from an OMP transcript in %s', (_label, format) => {
+    const entries = ompJsonl().split('\n').map(line => JSON.parse(line));
+    entries.splice(1, 0, {
+      type: 'message',
+      id: 'system-1',
+      parentId: null,
+      timestamp: '2026-04-01T00:00:00.500Z',
+      message: { role: 'system', content: 'SYNTHETIC PRIVATE OMP SYSTEM CONTEXT' },
+    });
+    entries[2].parentId = 'system-1';
+
+    const rendered = format(entries.map(entry => JSON.stringify(entry)).join('\n'));
+
+    expect(rendered).toContain('Please render an OMP transcript.');
+    expect(rendered).toContain('OMP transcripts render as markdown.');
+    expect(rendered).not.toContain('SYNTHETIC PRIVATE OMP SYSTEM CONTEXT');
   });
 });

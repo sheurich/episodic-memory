@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-10-13
+
+### Security
+
+- Native Pi conversation reads now stay inside the conversation archive and require bounded line ranges. Input, output, scan, deadline, and cancellation checks limit resource use. Non-regular files and symlinks are rejected before reading.
+- Dependency installers now retain uniquely owned locks until their process groups stop. Heartbeats and ownership checks prevent a slow installer from losing its lock or deleting a replacement owner's lock.
+
+### Fixed
+
+- Pi and OMP rendering now classify structured transcript metadata instead of user-message text. System messages remain excluded from rendered conversations.
+- Incremental OMP indexing now replaces regenerated answers and removes abandoned entries atomically. Unchanged answers retain their existing embeddings.
+
 ## [1.6.0] - 2026-09-08
 
 Adds a fifth conversation source, an off switch for automatic syncing, and two fixes for real-world resource problems.

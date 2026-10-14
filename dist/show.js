@@ -768,13 +768,14 @@ function isCodexRollout(lines) {
  * in `{ type: 'message', id, parentId, message: { role, ... } }`, unlike
  * Claude Code (flat `type: 'user' | 'assistant'`) or Codex (`payload`-keyed
  * rollout lines). Scans every line, not just the first, so it still works
- * when startLine/endLine slicing drops the leading `session` line.
+ * when startLine/endLine slicing drops the leading `session` line. Pi and OMP
+ * overlap at the message level, so only parsed structural metadata may
+ * disambiguate them; message content is never a format signal.
  */
 function isPiSession(lines) {
-    for (const line of lines) {
-        if (line.includes('"omp_'))
-            return false;
-    }
+    let hasPiMessage = false;
+    let hasPiControl = false;
+    let hasOmpSessionHeader = false;
     for (const line of lines) {
         let parsed;
         try {
@@ -785,21 +786,26 @@ function isPiSession(lines) {
         }
         if (!parsed || typeof parsed !== 'object')
             continue;
-        if (parsed.type === 'session' && typeof parsed.version === 'number' && 'cwd' in parsed) {
-            return true;
+        if (parsed.type === 'session') {
+            if (typeof parsed.version === 'number' && 'cwd' in parsed) {
+                return true;
+            }
+            if (!parsed.payload && !parsed.session) {
+                hasOmpSessionHeader = true;
+            }
         }
         if (parsed.type === 'thinking_level_change' || parsed.type === 'model_change') {
-            return true;
+            hasPiControl = true;
         }
         if (parsed.type === 'message' &&
             parsed.message &&
             typeof parsed.message === 'object' &&
             'parentId' in parsed &&
             ['user', 'assistant', 'toolResult', 'bashExecution', 'system'].includes(parsed.message.role)) {
-            return true;
+            hasPiMessage = true;
         }
     }
-    return false;
+    return (hasPiMessage || hasPiControl) && !hasOmpSessionHeader;
 }
 function extractPiText(content) {
     if (typeof content === 'string')
@@ -981,7 +987,10 @@ function formatOmpConversationAsMarkdown(lines) {
             metadata.cwd = entry.cwd || metadata.cwd;
             continue;
         }
-        if (entry.type !== 'message' || !entry.message || !entry.message.role || !entry.id) {
+        if (entry.type !== 'message' ||
+            !entry.message ||
+            !['user', 'assistant'].includes(entry.message.role) ||
+            !entry.id) {
             continue;
         }
         nodesById.set(entry.id, entry);

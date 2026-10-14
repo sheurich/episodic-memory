@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { initDatabase, insertExchange } from './db.js';
+import { initDatabase, insertExchange, deleteExchange } from './db.js';
 import { parseConversation } from './parser.js';
 import { initEmbeddings, generateExchangeEmbedding } from './embeddings.js';
 import { summarizeConversation } from './summarizer.js';
@@ -379,25 +379,53 @@ export async function indexUnprocessed(concurrency = 1, noSummaries = false) {
                 const projectArchive = path.join(ARCHIVE_DIR, project);
                 const archivePath = path.join(projectArchive, file);
                 const summaryPath = archivePath.replace('.jsonl', '-summary.txt');
-                // High-water mark: index exchanges past the last line we've already covered.
-                // Transcript JSONLs are append-only, so MAX(line_end) tells us where to resume.
+                // Append-only harnesses resume past the last indexed line. OMP instead
+                // reconciles the parsed active path below: regeneration can reuse a user line.
                 const hw = db.prepare('SELECT COALESCE(MAX(line_end), 0) as maxLine FROM exchanges WHERE archive_path = ?').get(archivePath);
                 const maxIndexedLine = hw.maxLine;
                 // Ensure parent dirs exist for subagent files
                 try {
                     fs.mkdirSync(path.dirname(archivePath), { recursive: true });
                     // Refresh the archive when the source may have grown beyond what we've seen.
-                    if (!fs.existsSync(archivePath) || maxIndexedLine > 0) {
+                    const archiveRefreshed = !fs.existsSync(archivePath) || maxIndexedLine > 0;
+                    if (archiveRefreshed) {
                         fs.copyFileSync(sourcePath, archivePath);
                     }
-                    // Parse and filter to exchanges past the high-water mark
                     const exchanges = await parseConversation(sourcePath, project, archivePath);
-                    const newExchanges = maxIndexedLine > 0
-                        ? exchanges.filter(e => e.lineStart > maxIndexedLine)
-                        : exchanges;
-                    if (newExchanges.length === 0)
-                        continue;
-                    unprocessed.push({ project, file, sourcePath, archivePath, summaryPath, exchanges: newExchanges });
+                    const indexedOmp = db.prepare(`
+          SELECT id, user_message AS userMessage, assistant_message AS assistantMessage,
+                 line_start AS lineStart, line_end AS lineEnd
+          FROM exchanges WHERE archive_path = ? AND harness = 'omp'
+        `).all(archivePath);
+                    // An empty parsed path has no harness metadata. Previously indexed OMP
+                    // rows identify deletion-only reconciliation (e.g. a new unanswered root).
+                    const reconcileOmp = exchanges.some(e => e.harness === 'omp') ||
+                        (exchanges.length === 0 && indexedOmp.length > 0);
+                    if (reconcileOmp) {
+                        // All rows may have been removed by an empty/oversize active path.
+                        if (!archiveRefreshed)
+                            fs.copyFileSync(sourcePath, archivePath);
+                        const activeIds = new Set(exchanges.map(e => e.id));
+                        const abandonedOmpIds = indexedOmp.filter(e => !activeIds.has(e.id)).map(e => e.id);
+                        const indexedById = new Map(indexedOmp.map(e => [e.id, e]));
+                        const changed = exchanges.filter(e => {
+                            const old = indexedById.get(e.id);
+                            return !old || old.userMessage !== e.userMessage || old.assistantMessage !== e.assistantMessage ||
+                                old.lineStart !== e.lineStart || old.lineEnd !== e.lineEnd;
+                        });
+                        if (changed.length > 0 || abandonedOmpIds.length > 0) {
+                            unprocessed.push({ project, file, sourcePath, archivePath, summaryPath,
+                                exchanges: changed, abandonedOmpIds });
+                        }
+                    }
+                    else {
+                        const newExchanges = maxIndexedLine > 0
+                            ? exchanges.filter(e => e.lineStart > maxIndexedLine)
+                            : exchanges;
+                        if (newExchanges.length === 0)
+                            continue;
+                        unprocessed.push({ project, file, sourcePath, archivePath, summaryPath, exchanges: newExchanges });
+                    }
                 }
                 catch (error) {
                     console.log(`  Skipped ${file} (read failed: ${error instanceof Error ? error.message : error})`);
@@ -414,7 +442,7 @@ export async function indexUnprocessed(concurrency = 1, noSummaries = false) {
     console.log(`Found ${unprocessed.length} unprocessed conversations`);
     // Batch process summaries (unless --no-summaries)
     if (!noSummaries) {
-        const needsSummary = unprocessed.filter(c => shouldQueueForSummary(c.summaryPath));
+        const needsSummary = unprocessed.filter(c => c.exchanges.length > 0 && shouldQueueForSummary(c.summaryPath));
         if (needsSummary.length > 0) {
             console.log(`Generating ${needsSummary.length} summaries (concurrency: ${concurrency})...\n`);
             await processBatch(needsSummary, async (conv) => {
@@ -445,6 +473,46 @@ export async function indexUnprocessed(concurrency = 1, noSummaries = false) {
     const maxMessageBytes = getMaxMessageBytes();
     let oversizeSkipped = 0;
     for (const conv of unprocessed) {
+        if (conv.abandonedOmpIds !== undefined) {
+            try {
+                const prepared = [];
+                const removeIds = new Set(conv.abandonedOmpIds);
+                for (const exchange of conv.exchanges) {
+                    if (isOversizeExchange(exchange, maxMessageBytes)) {
+                        oversizeSkipped++;
+                        // Also exclude an old row if its stable ID now contains oversize text.
+                        removeIds.add(exchange.id);
+                        continue;
+                    }
+                    const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
+                    const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
+                    const vector = new Float32Array(embedding);
+                    if (vector.length !== 384 || !vector.every(Number.isFinite)) {
+                        throw new Error(`Invalid OMP embedding for exchange ${exchange.id}`);
+                    }
+                    prepared.push({ exchange, embedding, toolNames });
+                }
+                // No writes until every replacement embedding is ready. The existing
+                // helpers handle vectors and FK tool-call cleanup; the outer transaction
+                // rolls back the entire archive if any insert or delete fails.
+                db.transaction(() => {
+                    for (const { exchange, embedding, toolNames } of prepared) {
+                        insertExchange(db, exchange, embedding, toolNames);
+                    }
+                    for (const id of removeIds) {
+                        if (db.prepare(`SELECT id FROM exchanges
+                WHERE id = ? AND archive_path = ? AND harness = 'omp'`).get(id, conv.archivePath)) {
+                            deleteExchange(db, id);
+                        }
+                    }
+                })();
+            }
+            catch (error) {
+                db.close();
+                throw error;
+            }
+            continue;
+        }
         for (const exchange of conv.exchanges) {
             // Skip oversize single messages BEFORE embedding — a foreign
             // summarizer's pasted transcript is noise, and embedding it is the

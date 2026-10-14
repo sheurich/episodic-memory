@@ -11,11 +11,16 @@ import { spawn } from "node:child_process";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { ConversationReadError, createConversationReader } from "../src/conversation-reader.js";
+import { getArchiveDir } from "../src/paths.js";
 
 export default function (pi: ExtensionAPI) {
   const extensionDir = path.dirname(fileURLToPath(import.meta.url));
   const pluginRoot = path.resolve(extensionDir, "..");
   const distDir = path.join(pluginRoot, "dist");
+  // Capture the configured trust boundary once. Tool arguments can select a
+  // file within this root, but can never redefine the root itself.
+  const conversationReader = createConversationReader(getArchiveDir());
 
   // 1. Session start background indexing
   pi.on("session_start", async (_event, _ctx) => {
@@ -121,40 +126,50 @@ export default function (pi: ExtensionAPI) {
     name: "read_conversation",
     label: "Read Conversation",
     description:
-      "Read full conversations or line ranges to extract detailed context after finding relevant results with search_conversations.",
+      "Read a bounded window of up to 40 lines from a JSONL conversation path returned by search_conversations.",
     parameters: Type.Object({
       path: Type.String({
-        description: "Absolute path to the JSONL conversation file (from search results)",
+        description: "Absolute archive JSONL path returned by search_conversations",
       }),
-      startLine: Type.Optional(
-        Type.Integer({
-          minimum: 1,
-          description: "Starting line number (1-indexed, inclusive). Omit to read from beginning.",
-        })
-      ),
-      endLine: Type.Optional(
-        Type.Integer({
-          minimum: 1,
-          description: "Ending line number (1-indexed, inclusive). Omit to read to end.",
-        })
-      ),
+      startLine: Type.Integer({
+        minimum: 1,
+        maximum: Number.MAX_SAFE_INTEGER,
+        description: "Starting physical JSONL line number (1-indexed, inclusive)",
+      }),
+      endLine: Type.Integer({
+        minimum: 1,
+        maximum: Number.MAX_SAFE_INTEGER,
+        description: "Ending physical JSONL line number (1-indexed, inclusive; at most 40 selected lines)",
+      }),
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      if (!fs.existsSync(params.path)) {
+      try {
+        const result = await conversationReader.readConversation(params, signal);
         return {
-          content: [{ type: "text", text: `Conversation file not found at ${params.path}` }],
-          details: { error: "file_not_found" },
+          content: [{ type: "text", text: result.markdown || "No conversation content found in the selected lines." }],
+          details: {
+            path: result.path,
+            startLine: result.startLine,
+            endLine: result.endLine,
+            linesRead: result.linesRead,
+          },
+        };
+      } catch (error) {
+        const code = error instanceof ConversationReadError
+          ? error.code
+          : error instanceof Error && error.name === "AbortError"
+            ? "cancelled"
+            : "read_failed";
+        const message = error instanceof ConversationReadError
+          ? error.message
+          : code === "cancelled"
+            ? "Conversation read cancelled."
+            : "Conversation read failed safely.";
+        return {
+          content: [{ type: "text", text: message }],
+          details: { error: code },
         };
       }
-
-      const raw = fs.readFileSync(params.path, "utf-8");
-      const showMod = await import(path.join(distDir, "show.js"));
-      const markdown = showMod.formatConversationAsMarkdown(raw, params.startLine, params.endLine);
-
-      return {
-        content: [{ type: "text", text: markdown || "No conversation content found." }],
-        details: { path: params.path, startLine: params.startLine, endLine: params.endLine },
-      };
     },
   });
 }

@@ -1,6 +1,6 @@
 {
   "name": "episodic-memory",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Semantic search for agent conversations (Claude Code, Codex, Pi, Gemini CLI, OpenCode)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
