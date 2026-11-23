@@ -95,7 +95,7 @@ async function main() {
             case 'repair':
                 console.log('Verifying conversation index...');
                 const repairIssues = await verifyIndex();
-                if (repairIssues.missing.length + repairIssues.orphaned.length + repairIssues.outdated.length > 0) {
+                if (repairIssues.missing.length + repairIssues.orphaned.length + repairIssues.outdated.length + repairIssues.unindexed.length > 0) {
                     await repairIndex(repairIssues);
                 }
                 else {

@@ -1,10 +1,13 @@
 import { describe, it, expect, afterEach } from "vitest";
 import {
 	mkdtempSync,
+	mkdirSync,
 	rmSync,
 	existsSync,
 	writeFileSync,
 	chmodSync,
+	copyFileSync,
+	linkSync,
 	readFileSync,
 } from "fs";
 import { spawn as spawnProcess } from "child_process";
@@ -29,6 +32,37 @@ async function waitFor(
 	}
 }
 
+/**
+ * Install a stub npm and return the node executable the dispatcher must be
+ * launched with. POSIX resolves `npm` from PATH. On Windows the installer
+ * ignores PATH and only runs the npm-cli.js beside process.execPath, so stage a
+ * node next to a stub npm package (same pattern as test/native-install.test.ts).
+ */
+function installNpmStub(binDir: string, stubBody: string): { nodeExecutable: string; pathEnv: string } {
+	if (process.platform !== "win32") {
+		const npmStubPath = join(binDir, "npm");
+		writeFileSync(npmStubPath, `#!/usr/bin/env node\n${stubBody}`, "utf-8");
+		chmodSync(npmStubPath, 0o755);
+		return { nodeExecutable: process.execPath, pathEnv: `${binDir}:${process.env.PATH}` };
+	}
+
+	const nodeDir = join(binDir, "node");
+	const npmDir = join(nodeDir, "node_modules", "npm");
+	mkdirSync(join(npmDir, "bin"), { recursive: true });
+	writeFileSync(
+		join(npmDir, "package.json"),
+		JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" } }),
+	);
+	writeFileSync(join(npmDir, "bin", "npm-cli.js"), stubBody, "utf-8");
+	const nodeExe = join(nodeDir, "node.exe");
+	try {
+		linkSync(process.execPath, nodeExe);
+	} catch {
+		copyFileSync(process.execPath, nodeExe);
+	}
+	return { nodeExecutable: nodeExe, pathEnv: process.env.PATH ?? "" };
+}
+
 describe("cli/episodic-memory.js dispatcher — dependency self-heal", () => {
 	let root: string;
 	let binDir: string;
@@ -51,43 +85,51 @@ describe("cli/episodic-memory.js dispatcher — dependency self-heal", () => {
 		binDir = mkdtempSync(join(tmpdir(), "episodic-memory-cli-bin-"));
 
 		const pidFile = join(root, "npm-stub.pid");
-		const npmStubPath = join(binDir, "npm");
-		writeFileSync(
-			npmStubPath,
-			`#!/usr/bin/env node\n` +
-				`import { writeFileSync } from 'fs';\n` +
+		const { nodeExecutable, pathEnv } = installNpmStub(
+			binDir,
+			`const { writeFileSync } = require('fs');\n` +
 				`writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n` +
 				`setInterval(() => {}, 1000);\n`,
-			"utf-8",
 		);
-		chmodSync(npmStubPath, 0o755);
 
 		// An empty plugin root: node_modules is entirely absent, so the
 		// dispatcher's findMissingDeps probe reports everything missing and
-		// takes the install path, invoking our stub "npm" (resolved via PATH).
-		const child = spawnProcess(process.execPath, [DISPATCHER_PATH, "stats"], {
+		// takes the install path, invoking our stub npm.
+		const child = spawnProcess(nodeExecutable, [DISPATCHER_PATH, "stats"], {
 			cwd: root,
 			env: {
 				...process.env,
 				CLAUDE_PLUGIN_ROOT: root,
-				PATH: `${binDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`,
+				PATH: pathEnv,
 			},
 			stdio: ["ignore", "pipe", "pipe"],
 		});
+		// Register completion immediately so an early exit cannot be missed.
+		const exited = new Promise<void>((resolve) =>
+			child.once("exit", () => resolve()),
+		);
 
+		let stubPid: number | undefined;
 		try {
 			await waitFor(() => existsSync(pidFile), 10_000);
-			const stubPid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
+			stubPid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
 			expect(Number.isFinite(stubPid)).toBe(true);
 		} finally {
-			const exited = new Promise<void>((resolve) =>
-				child.once("exit", () => resolve()),
-			);
 			child.kill("SIGTERM");
 			await exited;
-			expect(existsSync(join(root, ".episodic-memory-install.lock"))).toBe(
-				false,
-			);
+			if (process.platform === "win32") {
+				// Windows kill() is forceful: the dispatcher cannot run its signal
+				// cleanup, so stop the orphaned stub and skip the lock assertion.
+				if (stubPid !== undefined) {
+					try {
+						process.kill(stubPid);
+					} catch {}
+				}
+			} else {
+				expect(existsSync(join(root, ".episodic-memory-install.lock"))).toBe(
+					false,
+				);
+			}
 		}
 	}, 20_000);
 
@@ -96,27 +138,23 @@ describe("cli/episodic-memory.js dispatcher — dependency self-heal", () => {
 		binDir = mkdtempSync(join(tmpdir(), "episodic-memory-cli-bin-"));
 
 		const pidFile = join(root, "npm-stub.pid");
-		const npmStubPath = join(binDir, "npm");
-		writeFileSync(
-			npmStubPath,
-			`#!/usr/bin/env node\n` +
-				`import { writeFileSync } from 'fs';\n` +
+		const { nodeExecutable, pathEnv } = installNpmStub(
+			binDir,
+			`const { writeFileSync } = require('fs');\n` +
 				`writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n` +
 				`process.exit(0);\n`,
-			"utf-8",
 		);
-		chmodSync(npmStubPath, 0o755);
 
 		const output = await new Promise<string>((resolve, reject) => {
 			const child = spawnProcess(
-				process.execPath,
+				nodeExecutable,
 				[DISPATCHER_PATH, "--help"],
 				{
 					cwd: root,
 					env: {
 						...process.env,
 						CLAUDE_PLUGIN_ROOT: root,
-						PATH: `${binDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`,
+						PATH: pathEnv,
 					},
 					stdio: ["ignore", "pipe", "pipe"],
 				},

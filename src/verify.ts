@@ -4,6 +4,9 @@ import { parseConversation } from './parser.js';
 import { initDatabase, getAllExchanges, getFileLastIndexed } from './db.js';
 import { getArchiveDir, getExcludedProjects, findJsonlFiles, statIfExists } from './paths.js';
 import { formatErrorSentinel, isErroredSentinel } from './summary-sentinel.js';
+import { shouldSkipConversation } from './sync.js';
+import { PiSource } from './parsers/pi.js';
+import type { ConversationExchange } from './types.js';
 
 export interface VerificationResult {
   missing: Array<{ path: string; reason: string }>;
@@ -12,6 +15,22 @@ export interface VerificationResult {
   corrupted: Array<{ path: string; error: string }>;
   /** Archived conversations with a real summary but no rows in the index (e.g. after the database was rebuilt). */
   unindexed: Array<{ path: string }>;
+}
+
+/**
+ * Parse an archived conversation with the parser that matches its archive
+ * layout. Multi-source archives are <archive>/pi/<project>/<file>; the generic
+ * parser would classify Pi's bare session header as OMP, so Pi archives go
+ * through the registered Pi parser with the archive's project component.
+ * Legacy Claude archives (<archive>/<project>/<file>, including a Claude
+ * project literally named "pi") keep the generic parser.
+ */
+async function parseArchivedConversation(conversationPath: string): Promise<ConversationExchange[]> {
+  const relativeParts = path.relative(getArchiveDir(), conversationPath).split(path.sep);
+  if (relativeParts[0] === 'pi' && relativeParts.length >= 3) {
+    return new PiSource().parseConversation(conversationPath, relativeParts[1], conversationPath);
+  }
+  return parseConversation(conversationPath, relativeParts[0], conversationPath);
 }
 
 export async function verifyIndex(): Promise<VerificationResult> {
@@ -82,8 +101,12 @@ export async function verifyIndex(): Promise<VerificationResult> {
       // Check if file is outdated (modified after last_indexed), or never indexed at all.
       // An empty summary is the permanent-skip sentinel (#91): nothing to index there.
       const lastIndexed = getFileLastIndexed(db, conversationPath);
+      // An opted-out conversation (DO NOT INDEX marker, or unreadable: fail
+      // closed) must never be scheduled for indexing.
       if (lastIndexed === null && summaryContent.length > 0) {
-        result.unindexed.push({ path: conversationPath });
+        if (!shouldSkipConversation(conversationPath)) {
+          result.unindexed.push({ path: conversationPath });
+        }
       } else if (lastIndexed !== null) {
         const fileStat = fs.statSync(conversationPath);
         if (fileStat.mtimeMs > lastIndexed) {
@@ -97,7 +120,7 @@ export async function verifyIndex(): Promise<VerificationResult> {
 
       // Try parsing to detect corruption
       try {
-        await parseConversation(conversationPath, project, conversationPath);
+        await parseArchivedConversation(conversationPath);
       } catch (error) {
         result.corrupted.push({
           path: conversationPath,
@@ -130,7 +153,6 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
 
   // To avoid circular dependencies, we import the indexer functions dynamically
   const { initDatabase, insertExchange, deleteExchange } = await import('./db.js');
-  const { parseConversation } = await import('./parser.js');
   const { initEmbeddings, generateExchangeEmbedding } = await import('./embeddings.js');
   const { summarizeConversation } = await import('./summarizer.js');
 
@@ -152,15 +174,14 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
   ];
 
   for (const { conversationPath, summarize } of toReindex) {
+    // Fail closed: never summarize or embed an opted-out conversation.
+    if (shouldSkipConversation(conversationPath)) {
+      console.log(`Skipping opted-out conversation: ${conversationPath}`);
+      continue;
+    }
     console.log(`Re-indexing: ${conversationPath}`);
     try {
-      // Extract project name from path
-      const archiveDir = getArchiveDir();
-      const relativePath = conversationPath.replace(archiveDir + path.sep, '');
-      const project = relativePath.split(path.sep)[0];
-
-      // Parse conversation
-      const exchanges = await parseConversation(conversationPath, project, conversationPath);
+      const exchanges = await parseArchivedConversation(conversationPath);
 
       if (exchanges.length === 0) {
         console.log(`  Skipped (no exchanges)`);

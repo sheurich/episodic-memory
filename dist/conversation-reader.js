@@ -90,6 +90,16 @@ function checkDeadline(deadline) {
         throw new ConversationReadError('read_deadline_exceeded', 'Conversation read exceeded its fixed deadline.');
     }
 }
+function isTitleSlot(line) {
+    try {
+        const parsed = JSON.parse(line);
+        return !!parsed && typeof parsed === 'object' && !Array.isArray(parsed) &&
+            parsed.type === 'title';
+    }
+    catch {
+        return false;
+    }
+}
 function parseTrustedOmpHeader(line) {
     let parsed;
     try {
@@ -178,6 +188,8 @@ export function createConversationReader(archiveRoot) {
                 let headerLineParts = [];
                 let headerBytes = 0;
                 let trustedOmpHeader;
+                let trustedOmpHeaderLine = 0;
+                let hasLeadingTitleSlot = false;
                 const buffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
                 let reachedEnd = false;
                 const appendHeader = (part) => {
@@ -197,11 +209,28 @@ export function createConversationReader(archiveRoot) {
                     selectedLineParts.push(Buffer.from(part));
                 };
                 const finishLine = () => {
-                    if (currentLine === 1 && headerBytes <= MAX_SELECTED_INPUT_BYTES) {
-                        const headerLine = headerLineParts.length === 0
-                            ? ''
-                            : Buffer.concat(headerLineParts).toString('utf8');
-                        trustedOmpHeader = parseTrustedOmpHeader(headerLine);
+                    // Current OMP writes a fixed-width {type:"title"} slot before the
+                    // session header (src/parser.ts skips it), so the header is on line 1
+                    // or, after a title slot, line 2.
+                    if (currentLine <= 2) {
+                        if (headerBytes <= MAX_SELECTED_INPUT_BYTES) {
+                            const headerLine = headerLineParts.length === 0
+                                ? ''
+                                : Buffer.concat(headerLineParts).toString('utf8');
+                            if (currentLine === 1) {
+                                trustedOmpHeader = parseTrustedOmpHeader(headerLine);
+                                if (trustedOmpHeader)
+                                    trustedOmpHeaderLine = 1;
+                                else
+                                    hasLeadingTitleSlot = isTitleSlot(headerLine);
+                            }
+                            else if (hasLeadingTitleSlot) {
+                                trustedOmpHeader = parseTrustedOmpHeader(headerLine);
+                                if (trustedOmpHeader)
+                                    trustedOmpHeaderLine = 2;
+                            }
+                        }
+                        headerBytes = 0;
                     }
                     headerLineParts = [];
                     if (currentLine >= request.startLine && currentLine <= request.endLine) {
@@ -238,7 +267,7 @@ export function createConversationReader(archiveRoot) {
                     for (let index = 0; index < bytesRead; index += 1) {
                         if (buffer[index] !== 0x0a)
                             continue;
-                        if (currentLine === 1) {
+                        if (currentLine <= 2) {
                             appendHeader(buffer.subarray(segmentStart, index));
                         }
                         if (currentLine >= request.startLine && currentLine <= request.endLine) {
@@ -249,7 +278,7 @@ export function createConversationReader(archiveRoot) {
                         if (reachedEnd)
                             break;
                     }
-                    if (!reachedEnd && currentLine === 1) {
+                    if (!reachedEnd && currentLine <= 2) {
                         appendHeader(buffer.subarray(segmentStart, bytesRead));
                     }
                     if (!reachedEnd && currentLine >= request.startLine && currentLine <= request.endLine) {
@@ -261,7 +290,7 @@ export function createConversationReader(archiveRoot) {
                 throwIfAborted(signal);
                 checkDeadline(deadline);
                 const selectedJsonl = selectedLines.join('\n');
-                const formattingPrefix = trustedOmpHeader && request.startLine > 1
+                const formattingPrefix = trustedOmpHeader && trustedOmpHeaderLine < request.startLine
                     ? `${JSON.stringify(trustedOmpHeader)}\n`
                     : '';
                 if (selectedJsonl.trim() && selectedBytes + Buffer.byteLength(formattingPrefix, 'utf8') > MAX_SELECTED_INPUT_BYTES) {

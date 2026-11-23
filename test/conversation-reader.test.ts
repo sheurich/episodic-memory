@@ -245,6 +245,35 @@ describe('bounded native conversation reader', () => {
     expect(result.linesRead).toBe(2);
   });
 
+  it('recognizes the OMP session header after a leading title slot so a later window keeps thinking private', async () => {
+    const path = join(archiveRoot, 'omp-title-first-window.jsonl');
+    const lines = [
+      { type: 'title', title: 'PRIVATE_TITLE_SLOT_MARKER' },
+      { type: 'session', id: 'omp-title-first', cwd: '/work/title-first', timestamp: '2026-10-13T12:00:00.000Z' },
+      { type: 'message', id: 'system', parentId: null,
+        message: { role: 'system', content: 'PRIVATE_TITLE_FIRST_SYSTEM_MARKER' } },
+      { type: 'message', id: 'user', parentId: 'system',
+        message: { role: 'user', content: [{ type: 'text', text: 'Title-first user text.' }] } },
+      { type: 'message', id: 'assistant', parentId: 'user', message: {
+        role: 'assistant', content: [
+          { type: 'thinking', thinking: 'PRIVATE_TITLE_FIRST_THINKING_MARKER' },
+          { type: 'text', text: 'Title-first assistant text.' },
+        ],
+      } },
+    ];
+    writeFileSync(path, lines.map(line => JSON.stringify(line)).join('\n'));
+
+    const result = await createConversationReader(archiveRoot).readConversation({ path, startLine: 4, endLine: 5 });
+
+    expect(result.markdown).toContain('**Harness:** Oh My Pi (OMP)');
+    expect(result.markdown).toContain('Title-first user text.');
+    expect(result.markdown).toContain('Title-first assistant text.');
+    expect(result.markdown).not.toContain('PRIVATE_TITLE_FIRST_THINKING_MARKER');
+    expect(result.markdown).not.toContain('PRIVATE_TITLE_FIRST_SYSTEM_MARKER');
+    expect(result.markdown).not.toContain('PRIVATE_TITLE_SLOT_MARKER');
+    expect(result.linesRead).toBe(2);
+  });
+
   it.each(['model_change', 'thinking_level_change'])('keeps OMP privacy when a window contains %s', async (type) => {
     const file = join(archiveRoot, 'omp-control-window.jsonl');
     const lines = [

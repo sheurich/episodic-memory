@@ -5,6 +5,8 @@ import os from 'os';
 import { syncConversations } from '../src/sync.js';
 import { verifyIndex, repairIndex } from '../src/verify.js';
 import { summarizeConversation } from '../src/summarizer.js';
+import Database from 'better-sqlite3';
+import { generateExchangeEmbedding } from '../src/embeddings.js';
 import { suppressConsole } from './test-utils.js';
 
 vi.mock('../src/embeddings.js', () => ({
@@ -58,6 +60,7 @@ describe('no orphan .tmp copies, unindexed conversations', () => {
     process.env.TEST_ARCHIVE_DIR = archiveDir;
     process.env.TEST_DB_PATH = path.join(testDir, 'db.sqlite');
     vi.mocked(summarizeConversation).mockClear();
+    vi.mocked(generateExchangeEmbedding).mockClear();
   });
 
   afterEach(() => {
@@ -105,6 +108,71 @@ describe('no orphan .tmp copies, unindexed conversations', () => {
     expect(fs.readFileSync(conv.replace('.jsonl', '-summary.txt'), 'utf-8')).toBe('An existing summary');
     const after = await verifyIndex();
     expect(after.unindexed).toEqual([]);
+  });
+
+  it('does not schedule or index an opted-out archive that has a summary and zero rows', async () => {
+    const project = path.join(archiveDir, 'project');
+    fs.mkdirSync(project, { recursive: true });
+    const conv = path.join(project, 'private.jsonl');
+    fs.writeFileSync(
+      conv,
+      toolUseConversation() +
+        line({
+          type: 'user',
+          message: { role: 'user', content: '<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>' },
+          timestamp: '2024-01-01T00:03:00Z'
+        }) + '\n'
+    );
+    fs.writeFileSync(conv.replace('.jsonl', '-summary.txt'), 'An existing summary');
+
+    const before = await verifyIndex();
+    expect(before.unindexed).toEqual([]);
+
+    // Repair must also refuse a stale/forged issue list that names the file.
+    await repairIndex({ missing: [], orphaned: [], outdated: [], corrupted: [], unindexed: [{ path: conv }] });
+    expect(generateExchangeEmbedding).not.toHaveBeenCalled();
+    expect(summarizeConversation).not.toHaveBeenCalled();
+    const db = new Database(process.env.TEST_DB_PATH!);
+    try {
+      expect((db.prepare('SELECT COUNT(*) AS n FROM exchanges').get() as { n: number }).n).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('repairs a Pi archive with the Pi parser and archive project component', async () => {
+    const project = path.join(archiveDir, 'pi', 'my-project');
+    fs.mkdirSync(project, { recursive: true });
+    const conv = path.join(project, 'session.jsonl');
+    fs.writeFileSync(conv, [
+      line({ type: 'session', id: 'pi-repair-session', cwd: '/work/my-project' }),
+      line({ type: 'model_change', provider: 'test-provider', modelId: 'test-model' }),
+      line({ type: 'message', timestamp: '2026-10-12T12:00:00.000Z', message: { role: 'user', content: 'Pi question' } }),
+      line({ type: 'message', timestamp: '2026-10-12T12:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Pi answer' }] } }),
+    ].join('\n') + '\n');
+    fs.writeFileSync(conv.replace('.jsonl', '-summary.txt'), 'An existing summary');
+
+    const before = await verifyIndex();
+    expect(before.unindexed.map(u => u.path)).toEqual([conv]);
+    expect(before.corrupted).toEqual([]);
+
+    await repairIndex(before);
+
+    const db = new Database(process.env.TEST_DB_PATH!);
+    try {
+      const row = db.prepare('SELECT source, project, session_id AS sessionId, cwd, model, model_provider AS modelProvider, archive_path AS archivePath FROM exchanges').get() as Record<string, string>;
+      expect(row).toEqual({
+        source: 'pi',
+        project: 'my-project',
+        sessionId: 'pi-repair-session',
+        cwd: '/work/my-project',
+        model: 'test-model',
+        modelProvider: 'test-provider',
+        archivePath: conv,
+      });
+    } finally {
+      db.close();
+    }
   });
   afterAll(() => restoreConsole());
 });
