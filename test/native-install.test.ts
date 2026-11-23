@@ -111,8 +111,8 @@ function runWrapper(root: string, claudePluginRoot = root, nodeExecutable = proc
 }
 
 describe('npm 12 native install policy', () => {
-  it('approves only the better-sqlite3 dependency install script', () => {
-    expect(packageJson.allowScripts['better-sqlite3']).toBe(true);
+  it('does not approve a better-sqlite3 install script (N-API prebuilt binaries)', () => {
+    expect(packageJson.allowScripts['better-sqlite3']).toBe(false);
   });
 
   it('uses a cross-platform repair script without a pinned Node version', () => {
@@ -150,6 +150,7 @@ describe('better-sqlite3 native health probe', () => {
 
 describe('MCP server wrapper native repair', () => {
   const repairCommand = 'install --package-lock=false --no-audit --no-fund\n';
+  const missingDependenciesCommand = 'install --omit=dev --package-lock=false --no-audit --no-fund\n';
 
   it('uses its own package root when CLAUDE_PLUGIN_ROOT points elsewhere', () => {
     const root = stageWrapperFixture(goodSqliteModule, false);
@@ -170,7 +171,7 @@ describe('MCP server wrapper native repair', () => {
       writeFileSync(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {} }));
       const result = runWrapper(root, root, installerNode(root));
       expect(result.status, result.stderr).toBe(0);
-      expect(readFileSync(join(root, 'npm-runs'), 'utf8')).toBe(repairCommand);
+      expect(readFileSync(join(root, 'npm-runs'), 'utf8')).toBe(missingDependenciesCommand);
       expect(readFileSync(join(root, 'server-started'), 'utf8')).toBe('yes');
     } finally {
       rmSync(root, { recursive: true, force: true });

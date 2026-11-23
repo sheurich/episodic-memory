@@ -10,6 +10,8 @@ export interface VerificationResult {
   orphaned: Array<{ uuid: string; path: string }>;
   outdated: Array<{ path: string; fileTime: number; dbTime: number }>;
   corrupted: Array<{ path: string; error: string }>;
+  /** Archived conversations with a real summary but no rows in the index (e.g. after the database was rebuilt). */
+  unindexed: Array<{ path: string }>;
 }
 
 export async function verifyIndex(): Promise<VerificationResult> {
@@ -17,7 +19,8 @@ export async function verifyIndex(): Promise<VerificationResult> {
     missing: [],
     orphaned: [],
     outdated: [],
-    corrupted: []
+    corrupted: [],
+    unindexed: []
   };
 
   const archiveDir = getArchiveDir();
@@ -70,14 +73,18 @@ export async function verifyIndex(): Promise<VerificationResult> {
         result.missing.push({ path: conversationPath, reason: 'No summary file' });
         continue;
       }
-      if (isErroredSentinel(fs.readFileSync(summaryPath, 'utf-8'))) {
+      const summaryContent = fs.readFileSync(summaryPath, 'utf-8');
+      if (isErroredSentinel(summaryContent)) {
         result.missing.push({ path: conversationPath, reason: 'Previous summarization failed (error sentinel)' });
         continue;
       }
 
-      // Check if file is outdated (modified after last_indexed)
+      // Check if file is outdated (modified after last_indexed), or never indexed at all.
+      // An empty summary is the permanent-skip sentinel (#91): nothing to index there.
       const lastIndexed = getFileLastIndexed(db, conversationPath);
-      if (lastIndexed !== null) {
+      if (lastIndexed === null && summaryContent.length > 0) {
+        result.unindexed.push({ path: conversationPath });
+      } else if (lastIndexed !== null) {
         const fileStat = fs.statSync(conversationPath);
         if (fileStat.mtimeMs > lastIndexed) {
           result.outdated.push({
@@ -136,13 +143,15 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
     deleteExchange(db, orphan.uuid);
   }
 
-  // Re-index missing and outdated conversations
+  // Re-index missing and outdated conversations, and index the unindexed ones. An unindexed
+  // conversation already has its summary, so it is not summarized again.
   const toReindex = [
-    ...issues.missing.map(m => m.path),
-    ...issues.outdated.map(o => o.path)
+    ...issues.missing.map(m => ({ conversationPath: m.path, summarize: true })),
+    ...issues.outdated.map(o => ({ conversationPath: o.path, summarize: true })),
+    ...(issues.unindexed ?? []).map(u => ({ conversationPath: u.path, summarize: false }))
   ];
 
-  for (const conversationPath of toReindex) {
+  for (const { conversationPath, summarize } of toReindex) {
     console.log(`Re-indexing: ${conversationPath}`);
     try {
       // Extract project name from path
@@ -160,14 +169,16 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
 
       // Generate/update summary. A summarizer failure should not prevent
       // repair from refreshing the searchable index.
-      const summaryPath = conversationPath.replace('.jsonl', '-summary.txt');
-      try {
-        const summary = await summarizeConversation(exchanges);
-        fs.writeFileSync(summaryPath, summary, 'utf-8');
-        console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
-      } catch (error) {
-        fs.writeFileSync(summaryPath, formatErrorSentinel(error), 'utf-8');
-        console.error('  Failed to summarize %s:', conversationPath, error);
+      if (summarize) {
+        const summaryPath = conversationPath.replace('.jsonl', '-summary.txt');
+        try {
+          const summary = await summarizeConversation(exchanges);
+          fs.writeFileSync(summaryPath, summary, 'utf-8');
+          console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
+        } catch (error) {
+          fs.writeFileSync(summaryPath, formatErrorSentinel(error), 'utf-8');
+          console.error('  Failed to summarize %s:', conversationPath, error);
+        }
       }
 
       // Index exchanges

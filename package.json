@@ -19,7 +19,7 @@
     "./package.json": "./package.json"
   },
   "allowScripts": {
-    "better-sqlite3": true,
+    "better-sqlite3": false,
     "onnxruntime-node": true,
     "sharp": false
   },

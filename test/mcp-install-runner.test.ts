@@ -84,7 +84,7 @@ describe('install-runner — npm launcher selection', () => {
 
     expect(launch).toEqual({
       executable: nodeExecutable,
-      args: [pairedNpmCliPath, 'install', '--package-lock=false', '--no-audit', '--no-fund'],
+      args: [pairedNpmCliPath, 'install', '--omit=dev', '--package-lock=false', '--no-audit', '--no-fund'],
       shell: false,
     });
   });
@@ -107,7 +107,7 @@ describe('install-runner — npm launcher selection', () => {
       environment: {},
     })).toEqual({
       executable: nodeExecutable,
-      args: [npmCliPath, 'install', '--package-lock=false', '--no-audit', '--no-fund'],
+      args: [npmCliPath, 'install', '--omit=dev', '--package-lock=false', '--no-audit', '--no-fund'],
       shell: false,
     });
   });
@@ -155,7 +155,7 @@ describe('install-runner — npm launcher selection', () => {
       npmExecPath: '/ignored/npm-cli.js',
     })).toEqual({
       executable: 'npm',
-      args: ['install', '--package-lock=false', '--no-audit', '--no-fund'],
+      args: ['install', '--omit=dev', '--package-lock=false', '--no-audit', '--no-fund'],
       shell: false,
     });
   });
@@ -468,6 +468,21 @@ describe('install-runner — runNpmInstall termination handling (#161)', () => {
     return install.promise;
   });
 
+  it('installs runtime dependencies only (--omit=dev) (#203)', async () => {
+    const child = makeFakeChild();
+    const fakeSpawn = vi.fn((..._args: unknown[]) => child);
+    const install = runNpmInstall(root, { spawn: fakeSpawn });
+
+    const [command, args, options] = fakeSpawn.mock.calls[0] as [string, string[], { cwd: string }];
+    expect(command).toMatch(/^npm(\.cmd)?$/);
+    expect(args[0]).toBe('install');
+    expect(args).toContain('--omit=dev');
+    expect(options.cwd).toBe(root);
+
+    child.emit('exit', 0);
+    await install.promise;
+  });
+
   it('resolves and removes handlers when the child exits 0 normally (no termination)', async () => {
     const beforeSigterm = process.listenerCount('SIGTERM');
 
@@ -524,7 +539,10 @@ describe('install-runner — runNpmInstall termination handling (#161)', () => {
   });
 });
 
-describe('mcp-server-wrapper — real spawn, orphan prevention on SIGTERM (#161)', () => {
+// POSIX only: the stub `npm` is an extensionless shebang script, which Windows
+// can't run from PATH, and Windows has no catchable SIGTERM for the wrapper to
+// handle.
+describe.skipIf(process.platform === 'win32')('mcp-server-wrapper — real spawn, orphan prevention on SIGTERM (#161)', () => {
   let root: string;
   let binDir: string;
 

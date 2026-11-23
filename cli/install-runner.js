@@ -28,7 +28,11 @@ const INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const OUTPUT_CAP_BYTES = 128 * 1024;
 const TERMINATION_GRACE_MS = 2_000;
 const STOP_CONFIRM_MS = 2_000;
-const NPM_INSTALL_ARGS = ['install', '--package-lock=false', '--no-audit', '--no-fund'];
+// --omit=dev: the plugin runs prebuilt dist/, so dev tooling (tsx, esbuild,
+// vitest, typescript) is never loaded at runtime. Skipping it makes this
+// install smaller and faster, and drops native postinstall steps (esbuild's
+// binary check) that can fail the whole install (#203).
+const NPM_INSTALL_ARGS = ['install', '--omit=dev', '--package-lock=false', '--no-audit', '--no-fund'];
 const MAX_PACKAGE_JSON_BYTES = 128 * 1024;
 
 function canonicalRegularFile(candidate) {
