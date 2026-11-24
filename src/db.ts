@@ -369,3 +369,24 @@ export function deleteStaleExchangesForArchive(
   }
   return deleted;
 }
+
+/**
+ * Atomically replace an archive's indexed exchanges: delete every row (and
+ * vector) whose id is not among the replacements, then insert the replacements.
+ * Embeddings must be prepared by the caller first; if any delete or insert
+ * fails the whole archive rolls back to its previous rows. Returns the number
+ * of stale exchanges removed.
+ */
+export function replaceExchangesForArchive(
+  db: Database.Database,
+  archivePath: string,
+  replacements: ReadonlyArray<{ exchange: ConversationExchange; embedding: number[]; toolNames?: string[] }>
+): number {
+  return db.transaction(() => {
+    const removed = deleteStaleExchangesForArchive(db, archivePath, new Set(replacements.map(r => r.exchange.id)));
+    for (const { exchange, embedding, toolNames } of replacements) {
+      insertExchange(db, exchange, embedding, toolNames);
+    }
+    return removed;
+  })();
+}

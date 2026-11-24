@@ -257,9 +257,22 @@ export function createConversationReader(archiveRoot: string): ConversationReade
         let reachedEnd = false;
 
         const appendHeader = (part: Buffer): void => {
-          if (part.length === 0 || headerBytes > MAX_SELECTED_INPUT_BYTES) return;
-          headerBytes += part.length;
-          if (headerBytes <= MAX_SELECTED_INPUT_BYTES) headerLineParts.push(Buffer.from(part));
+          if (part.length === 0) return;
+          if (headerBytes <= MAX_SELECTED_INPUT_BYTES) {
+            headerBytes += part.length;
+            if (headerBytes <= MAX_SELECTED_INPUT_BYTES) headerLineParts.push(Buffer.from(part));
+          }
+          // After a title slot, line 2 decides whether this is an OMP archive.
+          // If it is too large to inspect, fail closed: guessing Pi here would
+          // render private OMP thinking blocks. This runs before the selection
+          // accounting so it takes precedence over selected_input_too_large
+          // when line 2 is itself inside the selected window.
+          if (currentLine === 2 && hasLeadingTitleSlot && headerBytes > MAX_SELECTED_INPUT_BYTES) {
+            throw new ConversationReadError(
+              'unverifiable_archive_header',
+              'Archive session header after the title slot exceeds the 64 KiB inspection limit.',
+            );
+          }
         };
 
         const appendSelected = (part: Buffer): void => {
@@ -279,15 +292,6 @@ export function createConversationReader(archiveRoot: string): ConversationReade
           // session header (src/parser.ts skips it), so the header is on line 1
           // or, after a title slot, line 2.
           if (currentLine <= 2) {
-            // After a title slot, line 2 decides whether this is an OMP archive.
-            // If it is too large to inspect, fail closed: guessing Pi here would
-            // render private OMP thinking blocks.
-            if (currentLine === 2 && hasLeadingTitleSlot && headerBytes > MAX_SELECTED_INPUT_BYTES) {
-              throw new ConversationReadError(
-                'unverifiable_archive_header',
-                'Archive session header after the title slot exceeds the 64 KiB inspection limit.',
-              );
-            }
             if (headerBytes <= MAX_SELECTED_INPUT_BYTES) {
               const headerLine = headerLineParts.length === 0
                 ? ''

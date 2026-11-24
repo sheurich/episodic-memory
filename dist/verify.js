@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import readline from 'readline';
 import { parseConversation } from './parser.js';
 import { initDatabase, getAllExchanges, getFileLastIndexed } from './db.js';
 import { getArchiveDir, getExcludedProjects, findJsonlFiles, statIfExists } from './paths.js';
@@ -47,6 +48,9 @@ function startsWithPiSessionHeader(conversationPath) {
                         return false;
                     break;
                 }
+                // Enforce the ceiling on the completed line before concatenating it.
+                if (lineBytes + (newline - start) > PI_HEADER_MAX_LINE_BYTES)
+                    return false;
                 parts.push(chunk.subarray(start, newline));
                 const line = Buffer.concat(parts).toString('utf8');
                 parts = [];
@@ -69,6 +73,35 @@ function startsWithPiSessionHeader(conversationPath) {
             }
             catch { }
         }
+    }
+}
+/**
+ * True when at least one non-empty line of the archive is valid JSON. A valid
+ * archive can legitimately parse to zero exchanges (e.g. an OMP active branch
+ * abandoned by a new unanswered root); an archive with no valid JSON line at
+ * all is malformed.
+ */
+async function hasValidJsonlRecord(conversationPath) {
+    const lines = readline.createInterface({
+        input: fs.createReadStream(conversationPath, { encoding: 'utf8' }),
+        crlfDelay: Infinity
+    });
+    try {
+        for await (const line of lines) {
+            if (!line.trim())
+                continue;
+            try {
+                JSON.parse(line);
+                return true;
+            }
+            catch {
+                // Keep looking: only a file with no valid record is malformed.
+            }
+        }
+        return false;
+    }
+    finally {
+        lines.close();
     }
 }
 /**
@@ -166,15 +199,16 @@ export async function verifyIndex() {
             // An empty summary is the permanent-skip sentinel (#91): nothing to index there.
             // An archive whose exchanges were all parsed but are all oversize
             // legitimately has zero rows, so it is not "unindexed". An archive with a
-            // real summary that parses to no exchanges at all (e.g. only malformed
-            // lines) is reported as corrupted: repair cannot index it, so reporting
-            // it as unindexed would never converge.
+            // real summary that parses to no exchanges and has no valid JSONL record
+            // (only malformed lines) is reported as corrupted: repair cannot index it,
+            // so reporting it as unindexed would never converge. A valid archive that
+            // legitimately has zero exchanges (e.g. an abandoned OMP branch) is clean.
             const lastIndexed = getFileLastIndexed(db, conversationPath);
             if (lastIndexed === null && summaryContent.length > 0) {
                 if (indexableExchanges && indexableExchanges.length > 0) {
                     result.unindexed.push({ path: conversationPath });
                 }
-                else if (parsedExchangeCount === 0) {
+                else if (parsedExchangeCount === 0 && !(await hasValidJsonlRecord(conversationPath))) {
                     result.corrupted.push({
                         path: conversationPath,
                         error: 'Archive has a summary but contains no parseable exchanges'
@@ -210,7 +244,7 @@ export async function verifyIndex() {
 export async function repairIndex(issues) {
     console.log('Repairing index...');
     // To avoid circular dependencies, we import the indexer functions dynamically
-    const { initDatabase, insertExchange, deleteExchange, deleteStaleExchangesForArchive } = await import('./db.js');
+    const { initDatabase, deleteExchange, replaceExchangesForArchive } = await import('./db.js');
     const { initEmbeddings, generateExchangeEmbedding } = await import('./embeddings.js');
     const { summarizeConversation } = await import('./summarizer.js');
     const db = initDatabase();
@@ -237,13 +271,17 @@ export async function repairIndex(issues) {
         console.log(`Re-indexing: ${conversationPath}`);
         try {
             const exchanges = await parseArchivedConversation(conversationPath);
-            if (exchanges.length === 0) {
-                console.log(`  Skipped (no exchanges)`);
+            // A malformed archive (no valid JSONL record) needs manual review and
+            // must not have its existing rows deleted. A valid archive with zero
+            // exchanges falls through so stale rows (e.g. an abandoned OMP branch)
+            // are removed.
+            if (exchanges.length === 0 && !(await hasValidJsonlRecord(conversationPath))) {
+                console.log(`  Skipped (no valid JSONL records; manual review needed)`);
                 continue;
             }
             // Generate/update summary. A summarizer failure should not prevent
             // repair from refreshing the searchable index.
-            if (summarize) {
+            if (summarize && exchanges.length > 0) {
                 const summaryPath = conversationPath.replace('.jsonl', '-summary.txt');
                 try {
                     const summary = await summarizeConversation(exchanges);
@@ -258,16 +296,19 @@ export async function repairIndex(issues) {
             // Index exchanges, applying the same oversize policy as sync/indexer.
             const indexable = exchanges.filter(exchange => !isOversizeExchange(exchange, maxMessageBytes));
             const oversizeSkipped = exchanges.length - indexable.length;
-            // Drop rows and vectors for exchanges that are no longer eligible (now
-            // oversize, or gone from the archive) so they are not left searchable.
-            const staleRemoved = deleteStaleExchangesForArchive(db, conversationPath, new Set(indexable.map(e => e.id)));
-            if (staleRemoved > 0)
-                console.log(`  Removed ${staleRemoved} stale indexed exchange(s)`);
+            // Prepare every replacement embedding before touching the database, then
+            // swap the archive's rows in one transaction: a failed embedding or insert
+            // leaves the existing rows and vectors untouched. Stale rows (now
+            // oversize, or gone from the archive) are removed in the same transaction.
+            const prepared = [];
             for (const exchange of indexable) {
                 const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
                 const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
-                insertExchange(db, exchange, embedding, toolNames);
+                prepared.push({ exchange, embedding, toolNames });
             }
+            const staleRemoved = replaceExchangesForArchive(db, conversationPath, prepared);
+            if (staleRemoved > 0)
+                console.log(`  Removed ${staleRemoved} stale indexed exchange(s)`);
             console.log(`  Indexed ${indexable.length} exchanges` + (oversizeSkipped > 0 ? ` (skipped ${oversizeSkipped} oversize)` : ''));
         }
         catch (error) {

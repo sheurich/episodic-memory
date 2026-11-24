@@ -329,6 +329,16 @@ describe('bounded native conversation reader', () => {
     expect(failure).toHaveProperty('error');
     expect((failure as { error: { code: string } }).error.code).toBe('unverifiable_archive_header');
     expect(JSON.stringify(failure)).not.toContain('PRIVATE_OVERSIZED_HEADER_THINKING_MARKER');
+
+    // A window that includes the oversized header line gets the same
+    // diagnostic, not selected_input_too_large.
+    const headerIncluded = await reader.readConversation({ path, startLine: 2, endLine: 5 }).then(
+      result => ({ result }),
+      error => ({ error }),
+    );
+    expect(headerIncluded).toHaveProperty('error');
+    expect((headerIncluded as { error: { code: string } }).error.code).toBe('unverifiable_archive_header');
+    expect(JSON.stringify(headerIncluded)).not.toContain('PRIVATE_OVERSIZED_HEADER_THINKING_MARKER');
   });
 
   it('still renders a real Pi session (no title slot, numeric version) with the Pi renderer', async () => {

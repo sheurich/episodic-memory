@@ -84,6 +84,10 @@ async function main() {
                     console.log('\nMissing summaries:');
                     issues.missing.forEach(m => console.log(`  ${m.path}`));
                 }
+                if (issues.corrupted.length > 0) {
+                    console.log('\nCorrupted files (manual review needed):');
+                    issues.corrupted.forEach(c => console.log(`  ${c.path}: ${c.error}`));
+                }
                 if (issues.missing.length + issues.orphaned.length + issues.outdated.length + issues.corrupted.length + issues.unindexed.length > 0) {
                     console.log('\nRun with --repair to fix these issues.');
                     process.exit(1);
@@ -97,6 +101,10 @@ async function main() {
                 const repairIssues = await verifyIndex();
                 if (repairIssues.missing.length + repairIssues.orphaned.length + repairIssues.outdated.length + repairIssues.unindexed.length > 0) {
                     await repairIndex(repairIssues);
+                }
+                else if (repairIssues.corrupted.length > 0) {
+                    console.log('No repairable issues; corrupted files need manual review:');
+                    repairIssues.corrupted.forEach(c => console.log(`  ${c.path}: ${c.error}`));
                 }
                 else {
                     console.log('✅ No issues to repair!');

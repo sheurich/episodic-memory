@@ -325,5 +325,96 @@ describe('no orphan .tmp copies, unindexed conversations', () => {
     }
   });
 
+  const ompHeader = { type: 'session', id: 'omp-session', cwd: '/fixture/project', timestamp: '2026-01-01T00:00:00Z' };
+  function ompMessage(id: string, parentId: string | null, role: 'user' | 'assistant', text: string) {
+    return { type: 'message', id, parentId, timestamp: '2026-01-01T00:00:00Z', message: { role, content: [{ type: 'text', text }] } };
+  }
+  const jsonlOf = (lines: object[]) => lines.map(line).join('\n') + '\n';
+
+  async function withIndexDb<T>(fn: (db: import('better-sqlite3').Database) => T): Promise<T> {
+    const { initDatabase } = await import('../src/db.js');
+    const db = initDatabase();
+    try { return fn(db); } finally { db.close(); }
+  }
+  const indexSnapshot = () => withIndexDb(db => ({
+    rows: db.prepare('SELECT * FROM exchanges ORDER BY id').all(),
+    vectors: db.prepare('SELECT id, embedding FROM vec_exchanges ORDER BY id').all(),
+  }));
+
+  it('repairs a valid OMP archive that now parses to zero exchanges by deleting stale rows, without reporting it corrupted', async () => {
+    const project = path.join(archiveDir, 'project');
+    fs.mkdirSync(project, { recursive: true });
+    const conv = path.join(project, 'omp.jsonl');
+    fs.writeFileSync(conv, jsonlOf([ompHeader, ompMessage('u1', null, 'user', 'Question'), ompMessage('a1', 'u1', 'assistant', 'Abandoned answer')]));
+    fs.writeFileSync(conv.replace('.jsonl', '-summary.txt'), 'An existing summary');
+    await repairIndex(await verifyIndex());
+    expect((await indexSnapshot()).rows).toHaveLength(1);
+    expect((await indexSnapshot()).vectors).toHaveLength(1);
+
+    // A new unanswered root abandons the old active branch: zero exchanges.
+    fs.appendFileSync(conv, jsonlOf([ompMessage('new-root', null, 'user', 'New root question')]));
+    const future = new Date(Date.now() + 60_000);
+    fs.utimesSync(conv, future, future);
+
+    const before = await verifyIndex();
+    expect(before.outdated.map(o => o.path)).toEqual([conv]);
+    expect(before.corrupted).toEqual([]);
+    expect(before.unindexed).toEqual([]);
+
+    await repairIndex(before);
+
+    const after = await indexSnapshot();
+    expect(after.rows).toEqual([]);
+    expect(after.vectors).toEqual([]);
+    expect(await verifyIndex()).toEqual({ missing: [], orphaned: [], outdated: [], corrupted: [], unindexed: [] });
+  });
+
+  it('keeps the corrupted diagnostic for an archive with no valid JSONL record, even when blank lines surround it', async () => {
+    const project = path.join(archiveDir, 'project');
+    fs.mkdirSync(project, { recursive: true });
+    const conv = path.join(project, 'garbage.jsonl');
+    fs.writeFileSync(conv, '\n{not json\n\n');
+    fs.writeFileSync(conv.replace('.jsonl', '-summary.txt'), 'A real summary');
+    const issues = await verifyIndex();
+    expect(issues.corrupted.map(c => c.path)).toEqual([conv]);
+    expect(issues.unindexed).toEqual([]);
+  });
+
+  it('leaves existing rows and vectors untouched when an embedding fails partway through repairing an outdated archive', async () => {
+    const project = path.join(archiveDir, 'project');
+    fs.mkdirSync(project, { recursive: true });
+    const conv = path.join(project, 'atomic.jsonl');
+    const turn = (id: string, ts: string) => [
+      line({ type: 'user', uuid: `${id}-u`, message: { role: 'user', content: `question ${id}` }, timestamp: ts }),
+      line({ type: 'assistant', uuid: `${id}-a`, message: { role: 'assistant', content: `answer ${id}` }, timestamp: ts }),
+    ].join('\n') + '\n';
+    fs.writeFileSync(conv, turn('old', '2024-01-01T00:00:00Z'));
+    fs.writeFileSync(conv.replace('.jsonl', '-summary.txt'), 'An existing summary');
+    await repairIndex(await verifyIndex());
+    const before = await indexSnapshot();
+    expect(before.rows).toHaveLength(1);
+
+    // The old exchange disappears and two new ones appear; the second embedding fails.
+    fs.writeFileSync(conv, turn('new1', '2024-01-02T00:00:00Z') + turn('new2', '2024-01-02T00:01:00Z'));
+    const future = new Date(Date.now() + 60_000);
+    fs.utimesSync(conv, future, future);
+    const issues = await verifyIndex();
+    expect(issues.outdated.map(o => o.path)).toEqual([conv]);
+
+    vi.mocked(generateExchangeEmbedding)
+      .mockResolvedValueOnce(new Array(384).fill(0.2))
+      .mockRejectedValueOnce(new Error('fixture embedding failed'));
+    await repairIndex(issues);
+
+    expect(await indexSnapshot()).toEqual(before);
+
+    // A later successful repair replaces the archive's rows.
+    await repairIndex(await verifyIndex());
+    const healed = await indexSnapshot();
+    expect(healed.rows).toHaveLength(2);
+    expect(healed.vectors).toHaveLength(2);
+    expect((healed.rows as Array<{ assistant_message: string }>).map(r => r.assistant_message).sort()).toEqual(['answer new1', 'answer new2']);
+  });
+
   afterAll(() => restoreConsole());
 });

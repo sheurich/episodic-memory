@@ -27,3 +27,15 @@ export declare function deleteExchange(db: Database.Database, id: string): void;
  * or are no longer eligible for indexing do not remain searchable.
  */
 export declare function deleteStaleExchangesForArchive(db: Database.Database, archivePath: string, keepIds: ReadonlySet<string>): number;
+/**
+ * Atomically replace an archive's indexed exchanges: delete every row (and
+ * vector) whose id is not among the replacements, then insert the replacements.
+ * Embeddings must be prepared by the caller first; if any delete or insert
+ * fails the whole archive rolls back to its previous rows. Returns the number
+ * of stale exchanges removed.
+ */
+export declare function replaceExchangesForArchive(db: Database.Database, archivePath: string, replacements: ReadonlyArray<{
+    exchange: ConversationExchange;
+    embedding: number[];
+    toolNames?: string[];
+}>): number;
