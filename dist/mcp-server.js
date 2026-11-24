@@ -32165,12 +32165,15 @@ var Ut = b.parse;
 var Kt = x.lex;
 
 // src/show.ts
-function formatConversationAsMarkdown(jsonl, startLine, endLine) {
+function formatConversationAsMarkdown(jsonl, startLine, endLine, options = {}) {
   const allLines = jsonl.trim().split("\n").filter((line) => line.trim());
   const lines = startLine !== void 0 || endLine !== void 0 ? allLines.slice(
     startLine !== void 0 ? startLine - 1 : 0,
     endLine !== void 0 ? endLine : void 0
   ) : allLines;
+  if (options.trustedFormat === "omp") {
+    return formatOmpConversationAsMarkdown(lines);
+  }
   if (isCodexRollout(lines)) {
     return formatCodexConversationAsMarkdown(lines);
   }

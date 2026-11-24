@@ -174,5 +174,77 @@ describe('no orphan .tmp copies, unindexed conversations', () => {
       db.close();
     }
   });
+
+  it('does not report an intentionally opted-out archive without a summary as missing or unindexed', async () => {
+    const project = path.join(archiveDir, 'project');
+    fs.mkdirSync(project, { recursive: true });
+    const conv = path.join(project, 'opted-out-no-summary.jsonl');
+    fs.writeFileSync(
+      conv,
+      toolUseConversation() +
+        line({
+          type: 'user',
+          message: { role: 'user', content: '<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>' },
+          timestamp: '2024-01-01T00:03:00Z'
+        }) + '\n'
+    );
+
+    const issues = await verifyIndex();
+    expect(issues).toEqual({ missing: [], orphaned: [], outdated: [], corrupted: [], unindexed: [] });
+  });
+
+  it('routes a nested legacy Claude archive under archive/pi/<session>/subagents/ to the generic parser', async () => {
+    const subagents = path.join(archiveDir, 'pi', 'session-uuid', 'subagents');
+    fs.mkdirSync(subagents, { recursive: true });
+    const conv = path.join(subagents, 'agent-abc123.jsonl');
+    fs.writeFileSync(conv, toolUseConversation());
+    fs.writeFileSync(conv.replace('.jsonl', '-summary.txt'), 'An existing summary');
+
+    const before = await verifyIndex();
+    expect(before.unindexed.map(u => u.path)).toEqual([conv]);
+    expect(before.corrupted).toEqual([]);
+
+    await repairIndex(before);
+
+    const db = new Database(process.env.TEST_DB_PATH!);
+    try {
+      const row = db.prepare('SELECT source, project, archive_path AS archivePath FROM exchanges').get() as Record<string, string>;
+      expect(row.source).not.toBe('pi');
+      expect(row.project).toBe('pi');
+      expect(row.archivePath).toBe(conv);
+    } finally {
+      db.close();
+    }
+    expect((await verifyIndex()).unindexed).toEqual([]);
+  });
+
+  it('does not report or index an archive whose exchanges are all oversize', async () => {
+    const project = path.join(archiveDir, 'project');
+    fs.mkdirSync(project, { recursive: true });
+    const conv = path.join(project, 'all-oversize.jsonl');
+    fs.writeFileSync(conv, [
+      line({ type: 'user', message: { role: 'user', content: 'x'.repeat(2048) }, timestamp: '2024-01-01T00:00:00Z' }),
+      line({ type: 'assistant', message: { role: 'assistant', content: 'ok' }, timestamp: '2024-01-01T00:00:01Z' }),
+    ].join('\n') + '\n');
+    fs.writeFileSync(conv.replace('.jsonl', '-summary.txt'), 'An existing summary');
+
+    process.env.EPISODIC_MEMORY_MAX_MESSAGE_BYTES = '1024';
+    try {
+      const issues = await verifyIndex();
+      expect(issues.unindexed).toEqual([]);
+
+      // Repair must also refuse a stale/forged issue list that names the file.
+      await repairIndex({ missing: [], orphaned: [], outdated: [], corrupted: [], unindexed: [{ path: conv }] });
+    } finally {
+      delete process.env.EPISODIC_MEMORY_MAX_MESSAGE_BYTES;
+    }
+    expect(generateExchangeEmbedding).not.toHaveBeenCalled();
+    const db = new Database(process.env.TEST_DB_PATH!);
+    try {
+      expect((db.prepare('SELECT COUNT(*) AS n FROM exchanges').get() as { n: number }).n).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
   afterAll(() => restoreConsole());
 });

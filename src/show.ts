@@ -23,7 +23,21 @@ interface ConversationMessage {
   toolUseResult?: Array<{ type: string; text: string }> | string;
 }
 
-export function formatConversationAsMarkdown(jsonl: string, startLine?: number, endLine?: number): string {
+export interface FormatConversationOptions {
+  /**
+   * Format already established by a trusted caller from structural file
+   * metadata. 'omp' bypasses the Pi/Codex content heuristics so OMP thinking
+   * blocks stay hidden even when the selected window looks Pi-shaped.
+   */
+  trustedFormat?: 'omp';
+}
+
+export function formatConversationAsMarkdown(
+  jsonl: string,
+  startLine?: number,
+  endLine?: number,
+  options: FormatConversationOptions = {},
+): string {
   const allLines = jsonl.trim().split('\n').filter(line => line.trim());
 
   // Apply line range if specified (1-indexed, inclusive)
@@ -34,6 +48,9 @@ export function formatConversationAsMarkdown(jsonl: string, startLine?: number, 
       )
     : allLines;
 
+  if (options.trustedFormat === 'omp') {
+    return formatOmpConversationAsMarkdown(lines);
+  }
   if (isCodexRollout(lines)) {
     return formatCodexConversationAsMarkdown(lines);
   }

@@ -89,6 +89,8 @@ describe("cli/episodic-memory.js dispatcher — dependency self-heal", () => {
 			binDir,
 			`const { writeFileSync } = require('fs');\n` +
 				`writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n` +
+				// Finite fallback so an orphaned stub can never outlive the test run.
+				`setTimeout(() => process.exit(0), 60000);\n` +
 				`setInterval(() => {}, 1000);\n`,
 		);
 
@@ -111,9 +113,19 @@ describe("cli/episodic-memory.js dispatcher — dependency self-heal", () => {
 
 		let stubPid: number | undefined;
 		try {
-			await waitFor(() => existsSync(pidFile), 10_000);
-			stubPid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
-			expect(Number.isFinite(stubPid)).toBe(true);
+			// The file can exist before the stub finishes writing it, so wait for
+			// a complete, valid PID rather than for mere existence.
+			const readStubPid = (): number | undefined => {
+				try {
+					const pid = Number.parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
+					return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+				} catch {
+					return undefined;
+				}
+			};
+			await waitFor(() => readStubPid() !== undefined, 10_000);
+			stubPid = readStubPid();
+			expect(stubPid).toBeGreaterThan(0);
 		} finally {
 			child.kill("SIGTERM");
 			await exited;

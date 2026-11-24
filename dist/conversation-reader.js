@@ -100,7 +100,10 @@ function isTitleSlot(line) {
         return false;
     }
 }
-function parseTrustedOmpHeader(line) {
+// A numeric `version` normally marks a Pi session header. Current OMP also
+// writes `version: 3`, but only after its fixed-width title slot, which Pi never
+// writes, so the numeric form is trusted only when allowNumericVersion is set.
+function parseTrustedOmpHeader(line, allowNumericVersion = false) {
     let parsed;
     try {
         parsed = JSON.parse(line);
@@ -114,7 +117,7 @@ function parseTrustedOmpHeader(line) {
     if (header.type !== 'session' ||
         typeof header.id !== 'string' ||
         header.id.length === 0 ||
-        typeof header.version === 'number' ||
+        (typeof header.version === 'number' && !allowNumericVersion) ||
         'payload' in header ||
         'session' in header) {
         return undefined;
@@ -225,7 +228,7 @@ export function createConversationReader(archiveRoot) {
                                     hasLeadingTitleSlot = isTitleSlot(headerLine);
                             }
                             else if (hasLeadingTitleSlot) {
-                                trustedOmpHeader = parseTrustedOmpHeader(headerLine);
+                                trustedOmpHeader = parseTrustedOmpHeader(headerLine, true);
                                 if (trustedOmpHeader)
                                     trustedOmpHeaderLine = 2;
                             }
@@ -299,7 +302,9 @@ export function createConversationReader(archiveRoot) {
                 const formattingJsonl = `${formattingPrefix}${selectedJsonl}`;
                 let markdown;
                 try {
-                    markdown = selectedJsonl.trim() ? formatConversationAsMarkdown(formattingJsonl) : '';
+                    markdown = selectedJsonl.trim()
+                        ? formatConversationAsMarkdown(formattingJsonl, undefined, undefined, trustedOmpHeader ? { trustedFormat: 'omp' } : {})
+                        : '';
                 }
                 catch {
                     throw new ConversationReadError('invalid_jsonl', 'Selected conversation lines are not valid supported JSONL.');
