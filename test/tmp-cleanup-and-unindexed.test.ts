@@ -246,5 +246,84 @@ describe('no orphan .tmp copies, unindexed conversations', () => {
       db.close();
     }
   });
+  it('reports a malformed-JSON archive with a real summary and no rows instead of passing silently', async () => {
+    const project = path.join(archiveDir, 'project');
+    fs.mkdirSync(project, { recursive: true });
+    const conv = path.join(project, 'malformed.jsonl');
+    fs.writeFileSync(conv, '{not json\n{"also": broken\n');
+    fs.writeFileSync(conv.replace('.jsonl', '-summary.txt'), 'A real summary');
+
+    const issues = await verifyIndex();
+    expect(issues.corrupted.map(c => c.path)).toEqual([conv]);
+    expect(issues.unindexed).toEqual([]);
+  });
+
+  it('routes a flat archive/pi file whose Pi session header exceeds 64 KiB to the Pi parser', async () => {
+    const project = path.join(archiveDir, 'pi', 'big-header-project');
+    fs.mkdirSync(project, { recursive: true });
+    const conv = path.join(project, 'session.jsonl');
+    fs.writeFileSync(conv, [
+      line({ type: 'session', id: 'pi-big-header', cwd: '/work/big', padding: 'x'.repeat(80 * 1024) }),
+      line({ type: 'message', timestamp: '2026-10-12T12:00:00.000Z', message: { role: 'user', content: 'Pi question' } }),
+      line({ type: 'message', timestamp: '2026-10-12T12:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Pi answer' }] } }),
+    ].join('\n') + '\n');
+    fs.writeFileSync(conv.replace('.jsonl', '-summary.txt'), 'An existing summary');
+
+    const before = await verifyIndex();
+    expect(before.unindexed.map(u => u.path)).toEqual([conv]);
+    await repairIndex(before);
+
+    const db = new Database(process.env.TEST_DB_PATH!);
+    try {
+      const row = db.prepare('SELECT source, project, session_id AS sessionId, cwd FROM exchanges').get() as Record<string, string>;
+      expect(row).toEqual({ source: 'pi', project: 'big-header-project', sessionId: 'pi-big-header', cwd: '/work/big' });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('removes the stale row and vector when an outdated archive exchange becomes oversize', async () => {
+    const project = path.join(archiveDir, 'project');
+    fs.mkdirSync(project, { recursive: true });
+    const conv = path.join(project, 'grows.jsonl');
+    const turn = (userText: string) => [
+      line({ type: 'user', uuid: 'u1', message: { role: 'user', content: userText }, timestamp: '2024-01-01T00:00:00Z' }),
+      line({ type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: 'ok' }, timestamp: '2024-01-01T00:00:01Z' }),
+    ].join('\n') + '\n';
+    fs.writeFileSync(conv, turn('small question'));
+    fs.writeFileSync(conv.replace('.jsonl', '-summary.txt'), 'An existing summary');
+
+    await repairIndex(await verifyIndex());
+    const count = (table: string) => {
+      const db = new Database(process.env.TEST_DB_PATH!);
+      try { return (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n; } finally { db.close(); }
+    };
+    // vec_exchanges needs the sqlite-vec extension, so count it via initDatabase.
+    const { initDatabase } = await import('../src/db.js');
+    const vecCount = () => {
+      const db = initDatabase();
+      try { return (db.prepare('SELECT COUNT(*) AS n FROM vec_exchanges').get() as { n: number }).n; } finally { db.close(); }
+    };
+    expect(count('exchanges')).toBe(1);
+    expect(vecCount()).toBe(1);
+
+    // Same exchange id (same first user uuid), but its content now exceeds the cap.
+    fs.writeFileSync(conv, turn('x'.repeat(2048)));
+    const future = new Date(Date.now() + 60_000);
+    fs.utimesSync(conv, future, future);
+
+    process.env.EPISODIC_MEMORY_MAX_MESSAGE_BYTES = '1024';
+    try {
+      const before = await verifyIndex();
+      expect(before.outdated.map(o => o.path)).toEqual([conv]);
+      await repairIndex(before);
+      expect(count('exchanges')).toBe(0);
+      expect(vecCount()).toBe(0);
+      expect(await verifyIndex()).toEqual({ missing: [], orphaned: [], outdated: [], corrupted: [], unindexed: [] });
+    } finally {
+      delete process.env.EPISODIC_MEMORY_MAX_MESSAGE_BYTES;
+    }
+  });
+
   afterAll(() => restoreConsole());
 });

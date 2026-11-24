@@ -349,3 +349,23 @@ export function deleteExchange(db: Database.Database, id: string): void {
   // Delete from main table
   db.prepare(`DELETE FROM exchanges WHERE id = ?`).run(id);
 }
+
+/**
+ * Delete every indexed exchange (row and vector) for an archive file except
+ * the ids in keepIds. Used when re-indexing, so exchanges that no longer exist
+ * or are no longer eligible for indexing do not remain searchable.
+ */
+export function deleteStaleExchangesForArchive(
+  db: Database.Database,
+  archivePath: string,
+  keepIds: ReadonlySet<string>
+): number {
+  const rows = db.prepare(`SELECT id FROM exchanges WHERE archive_path = ?`).all(archivePath) as Array<{ id: string }>;
+  let deleted = 0;
+  for (const { id } of rows) {
+    if (keepIds.has(id)) continue;
+    deleteExchange(db, id);
+    deleted++;
+  }
+  return deleted;
+}

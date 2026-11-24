@@ -87,8 +87,9 @@ describe("cli/episodic-memory.js dispatcher — dependency self-heal", () => {
 		const pidFile = join(root, "npm-stub.pid");
 		const { nodeExecutable, pathEnv } = installNpmStub(
 			binDir,
-			`const { writeFileSync } = require('fs');\n` +
-				`writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n` +
+			`const { writeFileSync, renameSync } = require('fs');\n` +
+				`writeFileSync(${JSON.stringify(pidFile + ".tmp")}, process.pid + "\\n");\n` +
+				`renameSync(${JSON.stringify(pidFile + ".tmp")}, ${JSON.stringify(pidFile)});\n` +
 				// Finite fallback so an orphaned stub can never outlive the test run.
 				`setTimeout(() => process.exit(0), 60000);\n` +
 				`setInterval(() => {}, 1000);\n`,
@@ -113,12 +114,14 @@ describe("cli/episodic-memory.js dispatcher — dependency self-heal", () => {
 
 		let stubPid: number | undefined;
 		try {
-			// The file can exist before the stub finishes writing it, so wait for
-			// a complete, valid PID rather than for mere existence.
+			// The stub renames a complete "<pid>\n" file into place; still accept
+			// only that exact form so a partial write can never parse as a PID.
 			const readStubPid = (): number | undefined => {
 				try {
-					const pid = Number.parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
-					return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+					const content = readFileSync(pidFile, "utf-8");
+					if (!/^[1-9]\d*\r?\n$/.test(content)) return undefined;
+					const pid = Number.parseInt(content, 10);
+					return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
 				} catch {
 					return undefined;
 				}
@@ -152,8 +155,9 @@ describe("cli/episodic-memory.js dispatcher — dependency self-heal", () => {
 		const pidFile = join(root, "npm-stub.pid");
 		const { nodeExecutable, pathEnv } = installNpmStub(
 			binDir,
-			`const { writeFileSync } = require('fs');\n` +
-				`writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n` +
+			`const { writeFileSync, renameSync } = require('fs');\n` +
+				`writeFileSync(${JSON.stringify(pidFile + ".tmp")}, process.pid + "\\n");\n` +
+				`renameSync(${JSON.stringify(pidFile + ".tmp")}, ${JSON.stringify(pidFile)});\n` +
 				`process.exit(0);\n`,
 		);
 

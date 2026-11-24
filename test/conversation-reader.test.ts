@@ -303,6 +303,34 @@ describe('bounded native conversation reader', () => {
     expect(result.markdown).not.toContain('PRIVATE_VERSIONED_TITLE_MARKER');
   });
 
+  it('fails closed when the title-first OMP session header exceeds the 64 KiB inspection limit', async () => {
+    const path = join(archiveRoot, 'omp-oversized-header.jsonl');
+    const lines = [
+      { type: 'title', title: 'PRIVATE_OVERSIZED_TITLE_MARKER' },
+      { type: 'session', version: 3, id: 'omp-oversized-header', cwd: '/work/oversized',
+        timestamp: '2026-10-13T12:00:00.000Z', ignored: 'x'.repeat(70 * 1024) },
+      { type: 'model_change', id: 'm0', parentId: null, model: 'x/y' },
+      { type: 'message', id: 'user', parentId: 'm0',
+        message: { role: 'user', content: [{ type: 'text', text: 'Oversized-header user text.' }] } },
+      { type: 'message', id: 'assistant', parentId: 'user', message: {
+        role: 'assistant', content: [
+          { type: 'thinking', thinking: 'PRIVATE_OVERSIZED_HEADER_THINKING_MARKER' },
+          { type: 'text', text: 'Oversized-header assistant text.' },
+        ],
+      } },
+    ];
+    writeFileSync(path, lines.map(line => JSON.stringify(line)).join('\n'));
+
+    const reader = createConversationReader(archiveRoot);
+    const failure = await reader.readConversation({ path, startLine: 4, endLine: 5 }).then(
+      result => ({ result }),
+      error => ({ error }),
+    );
+    expect(failure).toHaveProperty('error');
+    expect((failure as { error: { code: string } }).error.code).toBe('unverifiable_archive_header');
+    expect(JSON.stringify(failure)).not.toContain('PRIVATE_OVERSIZED_HEADER_THINKING_MARKER');
+  });
+
   it('still renders a real Pi session (no title slot, numeric version) with the Pi renderer', async () => {
     const path = join(archiveRoot, 'pi-session.jsonl');
     const lines = [

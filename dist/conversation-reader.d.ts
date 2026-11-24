@@ -1,4 +1,4 @@
-export type ConversationReadErrorCode = 'path_outside_archive' | 'file_not_found' | 'symlink_not_allowed' | 'not_regular_jsonl' | 'invalid_line_window' | 'line_window_too_large' | 'selected_input_too_large' | 'formatted_output_too_large' | 'scan_limit_exceeded' | 'read_deadline_exceeded' | 'invalid_jsonl' | 'read_failed';
+export type ConversationReadErrorCode = 'path_outside_archive' | 'file_not_found' | 'symlink_not_allowed' | 'not_regular_jsonl' | 'invalid_line_window' | 'line_window_too_large' | 'selected_input_too_large' | 'formatted_output_too_large' | 'scan_limit_exceeded' | 'read_deadline_exceeded' | 'invalid_jsonl' | 'unverifiable_archive_header' | 'read_failed';
 export declare class ConversationReadError extends Error {
     readonly code: ConversationReadErrorCode;
     constructor(code: ConversationReadErrorCode, message: string);

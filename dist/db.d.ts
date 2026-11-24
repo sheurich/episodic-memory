@@ -21,3 +21,9 @@ export declare function getAllExchanges(db: Database.Database): Array<{
 }>;
 export declare function getFileLastIndexed(db: Database.Database, archivePath: string): number | null;
 export declare function deleteExchange(db: Database.Database, id: string): void;
+/**
+ * Delete every indexed exchange (row and vector) for an archive file except
+ * the ids in keepIds. Used when re-indexing, so exchanges that no longer exist
+ * or are no longer eligible for indexing do not remain searchable.
+ */
+export declare function deleteStaleExchangesForArchive(db: Database.Database, archivePath: string, keepIds: ReadonlySet<string>): number;

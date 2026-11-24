@@ -18,22 +18,55 @@ export interface VerificationResult {
   unindexed: Array<{ path: string }>;
 }
 
-const PI_HEADER_PROBE_BYTES = 64 * 1024;
+const PI_HEADER_READ_CHUNK_BYTES = 64 * 1024;
+const PI_HEADER_MAX_LINE_BYTES = 64 * 1024 * 1024;
 
-/** True when the first non-empty line is a Pi `{type:'session'}` header. */
+function isPiSessionHeaderLine(line: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(line);
+    return !!parsed && typeof parsed === 'object' && !Array.isArray(parsed) &&
+      (parsed as Record<string, unknown>).type === 'session';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when the first non-empty line is a Pi `{type:'session'}` header. The
+ * whole line is read however long it is (Pi's parser does the same), up to a
+ * safety ceiling, so a large valid header is not misrouted to the OMP parser.
+ */
 function startsWithPiSessionHeader(conversationPath: string): boolean {
   let fd: number | undefined;
   try {
     fd = fs.openSync(conversationPath, 'r');
-    const buf = Buffer.allocUnsafe(PI_HEADER_PROBE_BYTES);
-    const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
-    for (const line of buf.subarray(0, bytesRead).toString('utf8').split('\n')) {
-      if (!line.trim()) continue;
-      const parsed: unknown = JSON.parse(line);
-      return !!parsed && typeof parsed === 'object' && !Array.isArray(parsed) &&
-        (parsed as Record<string, unknown>).type === 'session';
+    let parts: Buffer[] = [];
+    let lineBytes = 0;
+    let position = 0;
+    for (;;) {
+      const chunk = Buffer.allocUnsafe(PI_HEADER_READ_CHUNK_BYTES);
+      const bytesRead = fs.readSync(fd, chunk, 0, chunk.length, position);
+      if (bytesRead === 0) break;
+      position += bytesRead;
+      let start = 0;
+      for (;;) {
+        const newline = chunk.indexOf(0x0a, start);
+        if (newline === -1 || newline >= bytesRead) {
+          parts.push(chunk.subarray(start, bytesRead));
+          lineBytes += bytesRead - start;
+          if (lineBytes > PI_HEADER_MAX_LINE_BYTES) return false;
+          break;
+        }
+        parts.push(chunk.subarray(start, newline));
+        const line = Buffer.concat(parts).toString('utf8');
+        parts = [];
+        lineBytes = 0;
+        if (line.trim()) return isPiSessionHeaderLine(line);
+        start = newline + 1;
+      }
     }
-    return false;
+    const lastLine = Buffer.concat(parts).toString('utf8');
+    return lastLine.trim() ? isPiSessionHeaderLine(lastLine) : false;
   } catch {
     return false;
   } finally {
@@ -136,9 +169,11 @@ export async function verifyIndex(): Promise<VerificationResult> {
 
       // Parse once: detects corruption and tells whether any exchange is
       // eligible for indexing (oversize exchanges are never indexed).
+      let parsedExchangeCount: number | undefined;
       let indexableExchanges: ConversationExchange[] | undefined;
       try {
         const parsed = await parseArchivedConversation(conversationPath);
+        parsedExchangeCount = parsed.length;
         indexableExchanges = parsed.filter(exchange => !isOversizeExchange(exchange, maxMessageBytes));
       } catch (error) {
         result.corrupted.push({
@@ -149,12 +184,20 @@ export async function verifyIndex(): Promise<VerificationResult> {
 
       // Check if file is outdated (modified after last_indexed), or never indexed at all.
       // An empty summary is the permanent-skip sentinel (#91): nothing to index there.
-      // A parseable archive with no indexable exchanges (all oversize, or none)
-      // legitimately has zero rows, so it is not "unindexed".
+      // An archive whose exchanges were all parsed but are all oversize
+      // legitimately has zero rows, so it is not "unindexed". An archive with a
+      // real summary that parses to no exchanges at all (e.g. only malformed
+      // lines) is reported as corrupted: repair cannot index it, so reporting
+      // it as unindexed would never converge.
       const lastIndexed = getFileLastIndexed(db, conversationPath);
       if (lastIndexed === null && summaryContent.length > 0) {
         if (indexableExchanges && indexableExchanges.length > 0) {
           result.unindexed.push({ path: conversationPath });
+        } else if (parsedExchangeCount === 0) {
+          result.corrupted.push({
+            path: conversationPath,
+            error: 'Archive has a summary but contains no parseable exchanges'
+          });
         }
       } else if (lastIndexed !== null) {
         const fileStat = fs.statSync(conversationPath);
@@ -191,7 +234,7 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
   console.log('Repairing index...');
 
   // To avoid circular dependencies, we import the indexer functions dynamically
-  const { initDatabase, insertExchange, deleteExchange } = await import('./db.js');
+  const { initDatabase, insertExchange, deleteExchange, deleteStaleExchangesForArchive } = await import('./db.js');
   const { initEmbeddings, generateExchangeEmbedding } = await import('./embeddings.js');
   const { summarizeConversation } = await import('./summarizer.js');
 
@@ -245,6 +288,10 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
       // Index exchanges, applying the same oversize policy as sync/indexer.
       const indexable = exchanges.filter(exchange => !isOversizeExchange(exchange, maxMessageBytes));
       const oversizeSkipped = exchanges.length - indexable.length;
+      // Drop rows and vectors for exchanges that are no longer eligible (now
+      // oversize, or gone from the archive) so they are not left searchable.
+      const staleRemoved = deleteStaleExchangesForArchive(db, conversationPath, new Set(indexable.map(e => e.id)));
+      if (staleRemoved > 0) console.log(`  Removed ${staleRemoved} stale indexed exchange(s)`);
       for (const exchange of indexable) {
         const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
         const embedding = await generateExchangeEmbedding(
