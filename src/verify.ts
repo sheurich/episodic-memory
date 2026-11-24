@@ -78,27 +78,30 @@ function startsWithPiSessionHeader(conversationPath: string): boolean {
 }
 
 /**
- * True when at least one non-empty line of the archive is valid JSON. A valid
- * archive can legitimately parse to zero exchanges (e.g. an OMP active branch
- * abandoned by a new unanswered root); an archive with no valid JSON line at
- * all is malformed.
+ * True only when the archive has at least one valid JSON record and every
+ * non-blank line parses as JSON. A valid archive can legitimately parse to zero
+ * exchanges (e.g. an OMP active branch abandoned by a new unanswered root), but
+ * an archive with any malformed line may have lost messages (a valid session
+ * header followed by damaged message lines still parses to zero exchanges), so
+ * it needs manual review and must never drive a deletion-only replacement.
  */
-async function hasValidJsonlRecord(conversationPath: string): Promise<boolean> {
+async function isStrictValidJsonlArchive(conversationPath: string): Promise<boolean> {
   const lines = readline.createInterface({
     input: fs.createReadStream(conversationPath, { encoding: 'utf8' }),
     crlfDelay: Infinity
   });
+  let validRecords = 0;
   try {
     for await (const line of lines) {
       if (!line.trim()) continue;
       try {
         JSON.parse(line);
-        return true;
+        validRecords++;
       } catch {
-        // Keep looking: only a file with no valid record is malformed.
+        return false;
       }
     }
-    return false;
+    return validRecords > 0;
   } finally {
     lines.close();
   }
@@ -216,15 +219,15 @@ export async function verifyIndex(): Promise<VerificationResult> {
       // An empty summary is the permanent-skip sentinel (#91): nothing to index there.
       // An archive whose exchanges were all parsed but are all oversize
       // legitimately has zero rows, so it is not "unindexed". An archive with a
-      // real summary that parses to no exchanges and has no valid JSONL record
-      // (only malformed lines) is reported as corrupted: repair cannot index it,
+      // real summary that parses to no exchanges and is not strictly valid JSONL
+      // (no valid record, or any malformed line) is reported as corrupted: repair cannot index it,
       // so reporting it as unindexed would never converge. A valid archive that
       // legitimately has zero exchanges (e.g. an abandoned OMP branch) is clean.
       const lastIndexed = getFileLastIndexed(db, conversationPath);
       if (lastIndexed === null && summaryContent.length > 0) {
         if (indexableExchanges && indexableExchanges.length > 0) {
           result.unindexed.push({ path: conversationPath });
-        } else if (parsedExchangeCount === 0 && !(await hasValidJsonlRecord(conversationPath))) {
+        } else if (parsedExchangeCount === 0 && !(await isStrictValidJsonlArchive(conversationPath))) {
           result.corrupted.push({
             path: conversationPath,
             error: 'Archive has a summary but contains no parseable exchanges'
@@ -233,6 +236,16 @@ export async function verifyIndex(): Promise<VerificationResult> {
       } else if (lastIndexed !== null) {
         const fileStat = fs.statSync(conversationPath);
         if (fileStat.mtimeMs > lastIndexed) {
+          // A zero-exchange archive with any malformed line must not be
+          // scheduled for repair: replacing its rows would delete the last
+          // good index entries for a file that needs manual review.
+          if (parsedExchangeCount === 0 && !(await isStrictValidJsonlArchive(conversationPath))) {
+            result.corrupted.push({
+              path: conversationPath,
+              error: 'Archive parses to no exchanges and contains malformed JSONL lines'
+            });
+            continue;
+          }
           result.outdated.push({
             path: conversationPath,
             fileTime: fileStat.mtimeMs,
@@ -297,12 +310,12 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
     try {
       const exchanges = await parseArchivedConversation(conversationPath);
 
-      // A malformed archive (no valid JSONL record) needs manual review and
-      // must not have its existing rows deleted. A valid archive with zero
-      // exchanges falls through so stale rows (e.g. an abandoned OMP branch)
-      // are removed.
-      if (exchanges.length === 0 && !(await hasValidJsonlRecord(conversationPath))) {
-        console.log(`  Skipped (no valid JSONL records; manual review needed)`);
+      // An archive with a malformed line (or no valid record) needs manual
+      // review and must not have its existing rows deleted. A fully valid
+      // archive with zero exchanges falls through so stale rows (e.g. an
+      // abandoned OMP branch) are removed.
+      if (exchanges.length === 0 && !(await isStrictValidJsonlArchive(conversationPath))) {
+        console.log(`  Skipped (malformed or missing JSONL records; manual review needed)`);
         continue;
       }
 

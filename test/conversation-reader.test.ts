@@ -341,6 +341,27 @@ describe('bounded native conversation reader', () => {
     expect(JSON.stringify(headerIncluded)).not.toContain('PRIVATE_OVERSIZED_HEADER_THINKING_MARKER');
   });
 
+  it('reports unverifiable_archive_header, not selected_input_too_large, when a window starting at line 1 covers a 20 KiB title slot and a 70 KiB line-2 header', async () => {
+    const path = join(archiveRoot, 'omp-title-slot-oversized-header-from-line-1.jsonl');
+    const lines = [
+      { type: 'title', title: 'PRIVATE_PADDED_TITLE_MARKER', padding: 'p'.repeat(20 * 1024) },
+      { type: 'session', version: 3, id: 'omp-padded-title', cwd: '/work/padded',
+        timestamp: '2026-10-13T12:00:00.000Z', ignored: 'x'.repeat(70 * 1024) },
+      { type: 'message', id: 'user', parentId: null,
+        message: { role: 'user', content: [{ type: 'text', text: 'Padded-title user text.' }] } },
+    ];
+    writeFileSync(path, lines.map(line => JSON.stringify(line)).join('\n'));
+
+    const reader = createConversationReader(archiveRoot);
+    const failure = await reader.readConversation({ path, startLine: 1, endLine: 3 }).then(
+      result => ({ result }),
+      error => ({ error }),
+    );
+    expect(failure).toHaveProperty('error');
+    expect((failure as { error: { code: string } }).error.code).toBe('unverifiable_archive_header');
+    expect(JSON.stringify(failure)).not.toContain('PRIVATE_PADDED_TITLE_MARKER');
+  });
+
   it('still renders a real Pi session (no title slot, numeric version) with the Pi renderer', async () => {
     const path = join(archiveRoot, 'pi-session.jsonl');
     const lines = [

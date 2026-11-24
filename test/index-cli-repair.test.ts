@@ -16,15 +16,17 @@ function line(obj: object): string {
  * Run `index-cli repair` in-process against a real verifyIndex() with only
  * repairIndex() observed, so the test needs no embedding model.
  */
-async function runRepairCommand(): Promise<void> {
+async function runCliCommand(command: string): Promise<void> {
   vi.resetModules();
   vi.doMock('../src/verify.js', async () => {
     const actual = await vi.importActual<typeof import('../src/verify.js')>('../src/verify.js');
     return { ...actual, repairIndex: repairIndexSpy };
   });
-  process.argv = [process.argv[0], 'index-cli.js', 'repair'];
+  process.argv = [process.argv[0], 'index-cli.js', command];
   await import('../src/index-cli.js');
 }
+
+const runRepairCommand = () => runCliCommand('repair');
 
 describe('index-cli repair command', () => {
   afterAll(() => restoreConsole());
@@ -71,5 +73,27 @@ describe('index-cli repair command', () => {
     };
     expect(issues.unindexed.map(u => u.path)).toEqual([conv]);
     expect(issues.missing.length + issues.orphaned.length + issues.outdated.length).toBe(0);
+  });
+
+  it('does not suggest --repair when verify finds only corrupted files', async () => {
+    const conv = path.join(testDir, 'archive', 'project', 'garbage.jsonl');
+    fs.writeFileSync(conv, '{not json\n');
+    fs.writeFileSync(conv.replace('.jsonl', '-summary.txt'), 'A real summary');
+
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    try {
+      await runCliCommand('verify');
+      await vi.waitFor(() => expect(exitSpy).toHaveBeenCalledWith(1));
+    } finally {
+      console.log = originalLog;
+      exitSpy.mockRestore();
+    }
+    const output = logs.join('\n');
+    expect(output).toContain('Corrupted files (manual review needed):');
+    expect(output).toContain(conv);
+    expect(output).not.toContain('Run with --repair');
   });
 });

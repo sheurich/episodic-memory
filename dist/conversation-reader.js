@@ -212,12 +212,26 @@ export function createConversationReader(archiveRoot) {
                         throw new ConversationReadError('unverifiable_archive_header', 'Archive session header after the title slot exceeds the 64 KiB inspection limit.');
                     }
                 };
+                // Once the selection cap is hit, stop buffering and defer the error:
+                // a title slot on line 1 means line 2 may still be an oversized header,
+                // and unverifiable_archive_header takes precedence over
+                // selected_input_too_large.
+                let selectedInputTooLarge = false;
+                const throwSelectedInputTooLarge = () => {
+                    throw new ConversationReadError('selected_input_too_large', 'Selected conversation lines exceed the 64 KiB input limit.');
+                };
                 const appendSelected = (part) => {
-                    if (part.length === 0)
+                    if (part.length === 0 || selectedInputTooLarge)
                         return;
                     selectedBytes += part.length;
                     if (selectedBytes > MAX_SELECTED_INPUT_BYTES) {
-                        throw new ConversationReadError('selected_input_too_large', 'Selected conversation lines exceed the 64 KiB input limit.');
+                        selectedInputTooLarge = true;
+                        selectedLineParts = [];
+                        // A line-1 selection that is not a possible title slot (over the
+                        // header inspection limit) can never turn into a header error.
+                        if (currentLine === 1 && headerBytes > MAX_SELECTED_INPUT_BYTES)
+                            throwSelectedInputTooLarge();
+                        return;
                     }
                     selectedLineParts.push(Buffer.from(part));
                 };
@@ -246,22 +260,25 @@ export function createConversationReader(archiveRoot) {
                         headerBytes = 0;
                     }
                     headerLineParts = [];
-                    if (currentLine >= request.startLine && currentLine <= request.endLine) {
+                    if (currentLine >= request.startLine && currentLine <= request.endLine && !selectedInputTooLarge) {
                         const line = selectedLineParts.length === 0
                             ? ''
                             : Buffer.concat(selectedLineParts).toString('utf8');
                         selectedLines.push(line);
                         if (currentLine < request.endLine) {
                             selectedBytes += 1;
-                            if (selectedBytes > MAX_SELECTED_INPUT_BYTES) {
-                                throw new ConversationReadError('selected_input_too_large', 'Selected conversation lines exceed the 64 KiB input limit.');
-                            }
+                            if (selectedBytes > MAX_SELECTED_INPUT_BYTES)
+                                selectedInputTooLarge = true;
                         }
                     }
                     selectedLineParts = [];
                     if (currentLine === request.endLine)
                         reachedEnd = true;
                     currentLine += 1;
+                    // Only a title slot on line 1 leaves line 2's header verdict pending.
+                    if (selectedInputTooLarge && (reachedEnd || !(currentLine === 2 && hasLeadingTitleSlot))) {
+                        throwSelectedInputTooLarge();
+                    }
                 };
                 while (!reachedEnd) {
                     throwIfAborted(signal);
@@ -300,6 +317,8 @@ export function createConversationReader(archiveRoot) {
                 }
                 if (!reachedEnd && (selectedLineParts.length > 0 || headerLineParts.length > 0))
                     finishLine();
+                if (selectedInputTooLarge)
+                    throwSelectedInputTooLarge();
                 throwIfAborted(signal);
                 checkDeadline(deadline);
                 const selectedJsonl = selectedLines.join('\n');

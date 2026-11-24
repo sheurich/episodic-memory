@@ -369,6 +369,35 @@ describe('no orphan .tmp copies, unindexed conversations', () => {
     expect(await verifyIndex()).toEqual({ missing: [], orphaned: [], outdated: [], corrupted: [], unindexed: [] });
   });
 
+  it('reports a valid header followed by damaged message lines as corrupted and never deletes the existing rows and vectors', async () => {
+    const project = path.join(archiveDir, 'project');
+    fs.mkdirSync(project, { recursive: true });
+    const conv = path.join(project, 'omp-damaged.jsonl');
+    fs.writeFileSync(conv, jsonlOf([ompHeader, ompMessage('u1', null, 'user', 'Question'), ompMessage('a1', 'u1', 'assistant', 'Answer')]));
+    fs.writeFileSync(conv.replace('.jsonl', '-summary.txt'), 'An existing summary');
+    await repairIndex(await verifyIndex());
+    const good = await indexSnapshot();
+    expect(good.rows).toHaveLength(1);
+    expect(good.vectors).toHaveLength(1);
+
+    // The header survives, but every message line is damaged.
+    fs.writeFileSync(conv, `${line(ompHeader)}\n{"type":"message","id":"u1","parentId":null,"mess\n{not json\n`);
+    const future = new Date(Date.now() + 60_000);
+    fs.utimesSync(conv, future, future);
+
+    const issues = await verifyIndex();
+    expect(issues.corrupted.map(c => c.path)).toEqual([conv]);
+    expect(issues.outdated).toEqual([]);
+    expect(issues.unindexed).toEqual([]);
+
+    // Even when handed the archive as outdated, repair keeps the last good index.
+    await repairIndex({
+      missing: [], orphaned: [], corrupted: [], unindexed: [],
+      outdated: [{ path: conv, fileTime: future.getTime(), dbTime: 0 }],
+    });
+    expect(await indexSnapshot()).toEqual(good);
+  });
+
   it('keeps the corrupted diagnostic for an archive with no valid JSONL record, even when blank lines surround it', async () => {
     const project = path.join(archiveDir, 'project');
     fs.mkdirSync(project, { recursive: true });

@@ -88,8 +88,11 @@ async function main() {
                     console.log('\nCorrupted files (manual review needed):');
                     issues.corrupted.forEach(c => console.log(`  ${c.path}: ${c.error}`));
                 }
-                if (issues.missing.length + issues.orphaned.length + issues.outdated.length + issues.corrupted.length + issues.unindexed.length > 0) {
-                    console.log('\nRun with --repair to fix these issues.');
+                const repairableIssueCount = issues.missing.length + issues.orphaned.length + issues.outdated.length + issues.unindexed.length;
+                if (repairableIssueCount + issues.corrupted.length > 0) {
+                    // Corrupted files need manual review; --repair never touches them.
+                    if (repairableIssueCount > 0)
+                        console.log('\nRun with --repair to fix these issues.');
                     process.exit(1);
                 }
                 else {
