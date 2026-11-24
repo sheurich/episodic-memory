@@ -139,6 +139,21 @@ describe('bounded native conversation reader', () => {
     await expectReadError(reader, { path, startLine: 1, endLine: 1 }, 'selected_input_too_large');
   });
 
+  it('throws selected_input_too_large promptly for an oversized line 3 instead of scanning to the 64 MiB cap', async () => {
+    const path = join(archiveRoot, 'oversized-line-3.jsonl');
+    writeFileSync(path, `{"type":"session","id":"s"}\n{"type":"message"}\n${'x'.repeat(64 * 1024 + 1)}`);
+    // Zero padding with no newline: only an early throw avoids the 64 MiB scan.
+    const fd = openSync(path, 'r+');
+    try {
+      ftruncateSync(fd, 64 * 1024 * 1024 + 1);
+    } finally {
+      closeSync(fd);
+    }
+
+    const reader = createConversationReader(archiveRoot);
+    await expectReadError(reader, { path, startLine: 3, endLine: 3 }, 'selected_input_too_large');
+  });
+
   it('stops scanning a sparse huge file at the fixed 64 MiB cap', async () => {
     const path = join(archiveRoot, 'huge.jsonl');
     const fd = openSync(path, 'w');

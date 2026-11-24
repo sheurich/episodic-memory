@@ -398,6 +398,42 @@ describe('no orphan .tmp copies, unindexed conversations', () => {
     expect(await indexSnapshot()).toEqual(good);
   });
 
+  it('reports an archive with malformed lines and only an oversize parseable turn as corrupted and keeps the existing rows and vectors', async () => {
+    const project = path.join(archiveDir, 'project');
+    fs.mkdirSync(project, { recursive: true });
+    const conv = path.join(project, 'damaged-oversize.jsonl');
+    const turn = (userText: string) => [
+      line({ type: 'user', uuid: 'u1', message: { role: 'user', content: userText }, timestamp: '2024-01-01T00:00:00Z' }),
+      line({ type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: 'ok' }, timestamp: '2024-01-01T00:00:01Z' }),
+    ].join('\n') + '\n';
+    fs.writeFileSync(conv, turn('small question'));
+    fs.writeFileSync(conv.replace('.jsonl', '-summary.txt'), 'An existing summary');
+    await repairIndex(await verifyIndex());
+    const good = await indexSnapshot();
+    expect(good.rows).toHaveLength(1);
+    expect(good.vectors).toHaveLength(1);
+
+    // Damage lost the indexed turns; one parseable turn survives but is oversize.
+    fs.writeFileSync(conv, `{not json\n${turn('x'.repeat(2048))}{"type":"user","mess\n`);
+    const future = new Date(Date.now() + 60_000);
+    fs.utimesSync(conv, future, future);
+
+    process.env.EPISODIC_MEMORY_MAX_MESSAGE_BYTES = '1024';
+    try {
+      const issues = await verifyIndex();
+      expect(issues.corrupted.map(c => c.path)).toEqual([conv]);
+      expect(issues.outdated).toEqual([]);
+
+      await repairIndex({
+        missing: [], orphaned: [], corrupted: [], unindexed: [],
+        outdated: [{ path: conv, fileTime: future.getTime(), dbTime: 0 }],
+      });
+      expect(await indexSnapshot()).toEqual(good);
+    } finally {
+      delete process.env.EPISODIC_MEMORY_MAX_MESSAGE_BYTES;
+    }
+  });
+
   it('keeps the corrupted diagnostic for an archive with no valid JSONL record, even when blank lines surround it', async () => {
     const project = path.join(archiveDir, 'project');
     fs.mkdirSync(project, { recursive: true });

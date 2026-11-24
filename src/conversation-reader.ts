@@ -293,9 +293,10 @@ export function createConversationReader(archiveRoot: string): ConversationReade
           if (selectedBytes > MAX_SELECTED_INPUT_BYTES) {
             selectedInputTooLarge = true;
             selectedLineParts = [];
-            // A line-1 selection that is not a possible title slot (over the
-            // header inspection limit) can never turn into a header error.
-            if (currentLine === 1 && headerBytes > MAX_SELECTED_INPUT_BYTES) throwSelectedInputTooLarge();
+            // Only line 2 after a recognized title slot can still turn into an
+            // unverifiable_archive_header error. Anywhere else fail now rather
+            // than scanning on toward the 64 MiB cap.
+            if (!(currentLine === 2 && hasLeadingTitleSlot)) throwSelectedInputTooLarge();
             return;
           }
           selectedLineParts.push(Buffer.from(part));

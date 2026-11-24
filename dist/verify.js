@@ -84,10 +84,8 @@ function startsWithPiSessionHeader(conversationPath) {
  * it needs manual review and must never drive a deletion-only replacement.
  */
 async function isStrictValidJsonlArchive(conversationPath) {
-    const lines = readline.createInterface({
-        input: fs.createReadStream(conversationPath, { encoding: 'utf8' }),
-        crlfDelay: Infinity
-    });
+    const stream = fs.createReadStream(conversationPath, { encoding: 'utf8' });
+    const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
     let validRecords = 0;
     try {
         for await (const line of lines) {
@@ -105,6 +103,7 @@ async function isStrictValidJsonlArchive(conversationPath) {
     }
     finally {
         lines.close();
+        stream.destroy();
     }
 }
 /**
@@ -185,11 +184,9 @@ export async function verifyIndex() {
             }
             // Parse once: detects corruption and tells whether any exchange is
             // eligible for indexing (oversize exchanges are never indexed).
-            let parsedExchangeCount;
             let indexableExchanges;
             try {
                 const parsed = await parseArchivedConversation(conversationPath);
-                parsedExchangeCount = parsed.length;
                 indexableExchanges = parsed.filter(exchange => !isOversizeExchange(exchange, maxMessageBytes));
             }
             catch (error) {
@@ -211,7 +208,7 @@ export async function verifyIndex() {
                 if (indexableExchanges && indexableExchanges.length > 0) {
                     result.unindexed.push({ path: conversationPath });
                 }
-                else if (parsedExchangeCount === 0 && !(await isStrictValidJsonlArchive(conversationPath))) {
+                else if (indexableExchanges && indexableExchanges.length === 0 && !(await isStrictValidJsonlArchive(conversationPath))) {
                     result.corrupted.push({
                         path: conversationPath,
                         error: 'Archive has a summary but contains no parseable exchanges'
@@ -224,10 +221,10 @@ export async function verifyIndex() {
                     // A zero-exchange archive with any malformed line must not be
                     // scheduled for repair: replacing its rows would delete the last
                     // good index entries for a file that needs manual review.
-                    if (parsedExchangeCount === 0 && !(await isStrictValidJsonlArchive(conversationPath))) {
+                    if (indexableExchanges && indexableExchanges.length === 0 && !(await isStrictValidJsonlArchive(conversationPath))) {
                         result.corrupted.push({
                             path: conversationPath,
-                            error: 'Archive parses to no exchanges and contains malformed JSONL lines'
+                            error: 'Archive parses to no indexable exchanges and contains malformed JSONL lines'
                         });
                         continue;
                     }
@@ -288,7 +285,8 @@ export async function repairIndex(issues) {
             // review and must not have its existing rows deleted. A fully valid
             // archive with zero exchanges falls through so stale rows (e.g. an
             // abandoned OMP branch) are removed.
-            if (exchanges.length === 0 && !(await isStrictValidJsonlArchive(conversationPath))) {
+            const indexable = exchanges.filter(exchange => !isOversizeExchange(exchange, maxMessageBytes));
+            if (indexable.length === 0 && !(await isStrictValidJsonlArchive(conversationPath))) {
                 console.log(`  Skipped (malformed or missing JSONL records; manual review needed)`);
                 continue;
             }
@@ -307,7 +305,6 @@ export async function repairIndex(issues) {
                 }
             }
             // Index exchanges, applying the same oversize policy as sync/indexer.
-            const indexable = exchanges.filter(exchange => !isOversizeExchange(exchange, maxMessageBytes));
             const oversizeSkipped = exchanges.length - indexable.length;
             // Prepare every replacement embedding before touching the database, then
             // swap the archive's rows in one transaction: a failed embedding or insert
